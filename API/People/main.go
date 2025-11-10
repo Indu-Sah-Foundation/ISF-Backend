@@ -20,11 +20,16 @@ var client *mongo.Client
 var peopleColl *mongo.Collection
 
 func main() {
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		log.Fatal("MONGODB_URI environment variable is not set")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
-	opts := options.Client().ApplyURI("mongodb+srv://rksah:<password>@cluster0.kac1fxd.mongodb.net/?appName=Cluster0").SetServerAPIOptions(serverAPI)
+	opts := options.Client().ApplyURI(mongoURI).SetServerAPIOptions(serverAPI)
 	var err error
 	client, err := mongo.Connect(opts)
 	if err != nil {
@@ -41,9 +46,24 @@ func main() {
 	log.Println("Connected to MongoDB server! ")
 	peopleColl = client.Database("isfdb").Collection("people")
 
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	
 	r := gin.Default()
 
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+	})
+
 	r.POST("/people", createPersonHandler)
+	r.GET("/people", getAllPeopleHandler)
+	r.GET("/people/:id", getPersonHandler)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
 	srv := &http.Server{
 		Addr:    ":8080",
@@ -94,4 +114,50 @@ func createPersonHandler(c *gin.Context) {
 	insertedID := res.InsertedID.(bson.ObjectID)
 	p.ID = insertedID
 	c.JSON(http.StatusCreated, p)
+}
+
+func getAllPeopleHandler(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := peopleColl.Find(ctx, bson.M{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed: " + err.Error()})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var people []Person
+	if err = cursor.All(ctx, &people); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "decode failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, people)
+}
+
+
+func getPersonHandler(c *gin.Context) {
+	id := c.Param("id")
+	objID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ID format"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var p Person
+	err = peopleColl.FindOne(ctx, bson.M{"_id": objID}).Decode(&p)
+	if err == mongo.ErrNoDocuments {
+		c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, p)
 }

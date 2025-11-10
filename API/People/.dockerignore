@@ -1,0 +1,14 @@
+.git
+.gitignore
+README.md
+.env
+*.md
+.DS_Store
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.tmp
+tests/
+.github/
