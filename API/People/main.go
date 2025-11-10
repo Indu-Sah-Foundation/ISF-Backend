@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -20,6 +21,9 @@ var client *mongo.Client
 var peopleColl *mongo.Collection
 
 func main() {
+	// Load .env file (ignore error if file doesn't exist in production)
+	_ = godotenv.Load()
+
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		log.Fatal("MONGODB_URI environment variable is not set")
@@ -40,8 +44,8 @@ func main() {
 			log.Fatal("Disconnect Error: ", err)
 		}
 	}()
-	if err := client.Ping(context.TODO(), readpref.Primary()); err != nil {
-		log.Fatal("Mongo Ping Failed")
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		log.Fatal("Mongo Ping Failed: ", err)
 	}
 	log.Println("Connected to MongoDB server! ")
 	peopleColl = client.Database("isfdb").Collection("people")
@@ -49,7 +53,7 @@ func main() {
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	
+
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -66,7 +70,7 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":" + port,
 		Handler: r,
 	}
 
@@ -75,15 +79,15 @@ func main() {
 			log.Fatalf("listen: %s\n", err)
 		}
 	}()
-	log.Println("API listening on :8080")
+	log.Printf("API listening on :%s\n", port)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
 
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
 	log.Println("Server exiting")
@@ -98,7 +102,7 @@ func createPersonHandler(c *gin.Context) {
 	}
 
 	if !p.isValidEmail() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Email: "})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
 		return
 	}
 
@@ -133,9 +137,13 @@ func getAllPeopleHandler(c *gin.Context) {
 		return
 	}
 
+	// Return empty array instead of null if no people found
+	if people == nil {
+		people = []Person{}
+	}
+
 	c.JSON(http.StatusOK, people)
 }
-
 
 func getPersonHandler(c *gin.Context) {
 	id := c.Param("id")
