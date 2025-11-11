@@ -8,6 +8,9 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  APP_NAME: isfapp  # Must match your Terraform var.app_name
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -25,10 +28,13 @@ jobs:
       - name: Get ACR name from Terraform outputs
         id: get_acr
         run: |
-          # Adjust resource group name based on your var.app_name
-          ACR_NAME=$(az acr list --resource-group isf-backend-rg --query "[0].name" -o tsv)
+          RG_NAME="${{ env.APP_NAME }}-rg"
+          
+          ACR_NAME=$(az acr list --resource-group ${RG_NAME} --query "[0].name" -o tsv)
           echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+          echo "resource_group=$RG_NAME" >> $GITHUB_OUTPUT
           echo "ACR Name: $ACR_NAME"
+          echo "Resource Group: $RG_NAME"
       
       - name: Login to Azure Container Registry
         run: |
@@ -51,22 +57,22 @@ jobs:
           ACR_LOGIN_SERVER="${{ steps.get_acr.outputs.acr_name }}.azurecr.io"
           
           az webapp config container set \
-            --name isfinfa-go-backend \
-            --resource-group isf-backend-rg \
+            --name ${{ env.APP_NAME }}-go-backend \
+            --resource-group ${{ steps.get_acr.outputs.resource_group }} \
             --docker-custom-image-name ${ACR_LOGIN_SERVER}/go-backend:${{ github.sha }}
       
       - name: Set Dynamic App Settings (Secrets)
         run: |
           az webapp config appsettings set \
-            --name isfinfa-go-backend \
-            --resource-group isf-backend-rg \
+            --name ${{ env.APP_NAME }}-go-backend \
+            --resource-group ${{ steps.get_acr.outputs.resource_group }} \
             --settings MONGODB_URI="${{ secrets.MONGODB_URI }}"
       
       - name: Restart Web App
         run: |
           az webapp restart \
-            --name isfinfa-go-backend \
-            --resource-group isf-backend-rg
+            --name ${{ env.APP_NAME }}-go-backend \
+            --resource-group ${{ steps.get_acr.outputs.resource_group }}
       
       - name: Verify Deployment
         run: |
@@ -74,6 +80,6 @@ jobs:
           sleep 15
           
           az webapp show \
-            --name isfinfa-go-backend \
-            --resource-group isf-backend-rg \
+            --name ${{ env.APP_NAME }}-go-backend \
+            --resource-group ${{ steps.get_acr.outputs.resource_group }} \
             --query "state" -o tsv
