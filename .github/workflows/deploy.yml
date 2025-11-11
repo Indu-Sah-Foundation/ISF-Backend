@@ -26,6 +26,14 @@ jobs:
         run: |
           go mod download
           GOOS=linux GOARCH=amd64 go build -o app .
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deploy
+          cp API/People/app deploy/
+          cd deploy
+          zip -r ../deploy.zip .
+          cd ..
           ls -la
 
       - name: Azure Login via OIDC
@@ -39,7 +47,7 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: isfinfa-go-backend
-          package: ./API/People
+          package: deploy.zip
 
       - name: Configure App Settings
         run: |
