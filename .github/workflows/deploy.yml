@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  APP_NAME: isfapp  # Must match your Terraform var.app_name
+  APP_NAME: isfinfa  # Must match your actual Azure resources
 
 jobs:
   deploy:
