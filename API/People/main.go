@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -21,9 +20,7 @@ var client *mongo.Client
 var peopleColl *mongo.Collection
 
 func main() {
-	// Load .env file (ignore error if file doesn't exist in production)
-	_ = godotenv.Load()
-
+	// Get MongoDB URI from environment variable (set by Azure App Settings)
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		log.Fatal("MONGODB_URI environment variable is not set")
