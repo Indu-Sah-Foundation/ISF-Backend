@@ -1,5 +1,4 @@
 name: Deploy Go Backend
-
 on:
   push:
     branches: [main]
@@ -15,50 +14,66 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23.1"
-
-      - name: Build Go binary
-        working-directory: ./API/People
-        run: |
-          go mod download
-          GOOS=linux GOARCH=amd64 go build -o app .
-
-      - name: Create deployment package
-        run: |
-          mkdir -p deploy
-          cp API/People/app deploy/
-          cd deploy
-          zip -r ../deploy.zip .
-          cd ..
-          ls -la
-
+      
       - name: Azure Login via OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: isfinfa-go-backend
-          package: deploy.zip
-
-      - name: Configure App Settings
+      
+      - name: Get ACR name from Terraform outputs
+        id: get_acr
+        run: |
+          # Adjust resource group name based on your var.app_name
+          ACR_NAME=$(az acr list --resource-group isf-backend-rg --query "[0].name" -o tsv)
+          echo "acr_name=$ACR_NAME" >> $GITHUB_OUTPUT
+          echo "ACR Name: $ACR_NAME"
+      
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name ${{ steps.get_acr.outputs.acr_name }}
+      
+      - name: Build and push Docker image
+        working-directory: ./API/People
+        run: |
+          ACR_LOGIN_SERVER="${{ steps.get_acr.outputs.acr_name }}.azurecr.io"
+          IMAGE_TAG="${{ github.sha }}"
+          
+          docker build -t ${ACR_LOGIN_SERVER}/go-backend:${IMAGE_TAG} .
+          docker build -t ${ACR_LOGIN_SERVER}/go-backend:latest .
+          
+          docker push ${ACR_LOGIN_SERVER}/go-backend:${IMAGE_TAG}
+          docker push ${ACR_LOGIN_SERVER}/go-backend:latest
+      
+      - name: Update Web App with new image
+        run: |
+          ACR_LOGIN_SERVER="${{ steps.get_acr.outputs.acr_name }}.azurecr.io"
+          
+          az webapp config container set \
+            --name isfinfa-go-backend \
+            --resource-group isf-backend-rg \
+            --docker-custom-image-name ${ACR_LOGIN_SERVER}/go-backend:${{ github.sha }}
+      
+      - name: Set Dynamic App Settings (Secrets)
         run: |
           az webapp config appsettings set \
             --name isfinfa-go-backend \
             --resource-group isf-backend-rg \
-            --settings \
-              MONGODB_URI="${{ secrets.MONGODB_URI }}" \
-              PORT="8080" \
-              WEBSITES_PORT="8080" \
-              GIN_MODE="release"
-
-          az webapp config set \
+            --settings MONGODB_URI="${{ secrets.MONGODB_URI }}"
+      
+      - name: Restart Web App
+        run: |
+          az webapp restart \
             --name isfinfa-go-backend \
+            --resource-group isf-backend-rg
+      
+      - name: Verify Deployment
+        run: |
+          echo "Deployment completed. Checking app status..."
+          sleep 15
+          
+          az webapp show \
+            --name isfinfa-go-backend \
+            --resource-group isf-backend-rg \
+            --query "state" -o tsv
