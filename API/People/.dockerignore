@@ -1,7 +1,0 @@
-.git
-.gitignore
-README.md
-*.md
-.env
-.env.*
-*.log
