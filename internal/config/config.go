@@ -38,7 +38,7 @@ func Load() (*Config, error) {
 		GinMode:     getEnvOr("GIN_MODE", "debug"),
 	}
 
-	// Validate required fields. We'll add more as we wire in Redis, Stripe, etc.
+	// Validate required fields.
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
