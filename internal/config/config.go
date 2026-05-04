@@ -7,6 +7,8 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds every setting the backend needs.
@@ -27,10 +29,13 @@ type Config struct {
 }
 
 // Load reads environment variables and returns a populated *Config.
-// It returns an error 
-// if any *required* variable is missing 
+// It returns an error
+// if any *required* variable is missing
 // then fail fast startup rather than crashing on the first request.
 func Load() (*Config, error) {
+	// Load .env file if it exists (ignore error if not found)
+	_ = godotenv.Load()
+
 	cfg := &Config{
 		Port:        getEnvOr("PORT", "8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
