@@ -26,6 +26,13 @@ func (h *Handler) create(c *gin.Context) {
 	var req CreatePersonRequest
 	err := c.ShouldBindJSON(&req)
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	p, err := h.svc.Create(c.Request.Context(), req.Name, req.Email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, p)
 }
