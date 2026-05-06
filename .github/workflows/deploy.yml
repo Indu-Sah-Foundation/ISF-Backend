@@ -41,7 +41,6 @@ jobs:
           az acr login --name ${{ steps.get_acr.outputs.acr_name }}
       
       - name: Build and push Docker image
-        working-directory: ./Dockerfile
         run: |
           ACR_LOGIN_SERVER="${{ steps.get_acr.outputs.acr_name }}.azurecr.io"
           IMAGE_TAG="${{ github.sha }}"
