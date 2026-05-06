@@ -26,3 +26,7 @@ func (s *Service) Create(ctx context.Context, name, email string) (*Person, erro
 func (s *Service) List(ctx context.Context) ([]Person, error) {
 	return s.repo.List(ctx)
 }
+
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (*Person, error) {
+	return s.repo.GetByID(ctx, id)
+}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"isf-backend/internal/people"
 	"log"
 	"net/http"
 
@@ -22,8 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load failed: %v", err)
 	}
-	if err := db.Migrate(cfg.DatabaseURL);
-	err != nil {
+	if err := db.Migrate(cfg.DatabaseURL); err != nil {
 		log.Fatalf("migration failed: %v", err)
 	}
 	ctx := context.Background()
@@ -36,7 +36,11 @@ func main() {
 	gin.SetMode(cfg.GinMode)
 
 	// 3. Build the router. gin.Default() includes logger + recovery middleware.
+	peopleRepo := people.NewRepo(pool)
+	peopleSvc := people.NewService(peopleRepo)
+	peopleHandler := people.NewHandler(peopleSvc)
 	r := gin.Default()
+	peopleHandler.RegisterRoutes(r)
 
 	// 4. Routes. Just /health for now -- App Service uses this for readiness
 	//    probes, and Front Door uses it to decide if the origin is healthy.
@@ -46,9 +50,9 @@ func main() {
 
 	r.GET("/health/db", func(c *gin.Context) {
 		if err := pool.Ping(c.Request.Context()); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable", "error": err.Error(),})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable", "error": err.Error()})
 			return
-		} 
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
