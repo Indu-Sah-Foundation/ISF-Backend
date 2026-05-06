@@ -40,6 +40,6 @@ func Migrate(databaseURL string) error {
 
 func stripScheme(url string) string {
 	parsedUrl := strings.TrimPrefix(url, "postgres://")
-	parsedUrl = strings.TrimPrefix(url, "postgresql://")
+	parsedUrl = strings.TrimPrefix(parsedUrl, "postgresql://")
 	return parsedUrl
 }
