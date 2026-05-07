@@ -98,14 +98,15 @@ func (r *Repo) Update(ctx context.Context, id uuid.UUID, req UpdateArticleReques
 	return &a, nil
 }
 
-func (r *Repo) Delete(ctx context.Context, id uuid.UUID) error {
-	const q = `DELETE FROM articles WHERE id = $1`
-	tag, err := r.pool.Exec(ctx, q, id)
+func (r *Repo) Delete(ctx context.Context, id uuid.UUID) (string, error) {
+	const q = `DELETE FROM articles WHERE id = $1 RETURNING slug`
+	var slug string
+	err := r.pool.QueryRow(ctx, q, id).Scan(&slug)
 	if err != nil {
-		return fmt.Errorf("delete article: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", fmt.Errorf("delete article: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return slug, nil
 }

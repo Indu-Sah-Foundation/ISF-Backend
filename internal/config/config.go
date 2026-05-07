@@ -26,6 +26,8 @@ type Config struct {
 
 	// GinMode is "debug" locally, "release" in production.
 	GinMode string
+
+	RedisURL string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -41,6 +43,7 @@ func Load() (*Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		JWTSecret:   os.Getenv("JWT_SECRET"),
 		GinMode:     getEnvOr("GIN_MODE", "debug"),
+		RedisURL:    os.Getenv("REDIS_URL"),
 	}
 
 	// Validate required fields.
