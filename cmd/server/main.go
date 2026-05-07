@@ -5,15 +5,16 @@ package main
 
 import (
 	"context"
-	"isf-backend/internal/people"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"isf-backend/internal/articles"
+	"isf-backend/internal/cache"
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
+	"isf-backend/internal/people"
 )
 
 func main() {
@@ -41,8 +42,14 @@ func main() {
 	peopleSvc := people.NewService(peopleRepo)
 	peopleHandler := people.NewHandler(peopleSvc)
 
+	redisCache, err := cache.NewRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("redis connection failed: %v", err)
+	}
+	defer redisCache.Close()
+
 	articleRepo := articles.NewRepo(pool)
-	articleSvc := articles.NewService(articleRepo)
+	articleSvc := articles.NewService(articleRepo, redisCache)
 	articleHandler := articles.NewHandler(articleSvc)
 
 	r := gin.Default()

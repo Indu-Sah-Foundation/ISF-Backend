@@ -106,6 +106,7 @@ func (r *Repo) Delete(ctx context.Context, id uuid.UUID) (string, error) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", ErrNotFound
 		}
+		return "", fmt.Errorf("delete article: %w", err)
 	}
 	return slug, nil
 }
