@@ -110,3 +110,39 @@ func (r *Repo) Delete(ctx context.Context, id uuid.UUID) (string, error) {
 	}
 	return slug, nil
 }
+
+func (r *Repo) GetTranslation(ctx context.Context, articleID uuid.UUID, lang string) (title, bodyMD string, err error) {
+	const q = `SELECT title, body_md FROM article_translations WHERE article_id = $1 AND lang = $2`
+	err = r.pool.QueryRow(ctx, q, articleID, lang).Scan(&title, &bodyMD)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", ErrNotFound
+		}
+		return "", "", fmt.Errorf("get translation: %w", err)
+
+	}
+	return title, bodyMD, nil
+}
+
+func (r *Repo) SaveTranslation(ctx context.Context, articleID uuid.UUID, lang, title, bodyMD string) error {
+	const q = `
+    INSERT INTO article_translations (article_id, lang, title, body_md, translated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (article_id, lang) DO UPDATE
+        SET title = EXCLUDED.title,
+            body_md = EXCLUDED.body_md,
+            translated_at = NOW()
+    `
+	if _, err := r.pool.Exec(ctx, q, articleID, lang, title, bodyMD); err != nil {
+		return fmt.Errorf("save translation: %w", err)
+	}
+	return nil
+}
+
+func (r *Repo) DeleteTranslation(ctx context.Context, articleID uuid.UUID) error {
+	const q = `DELETE FROM article_translations WHERE article_id = $1`
+	if _, err := r.pool.Exec(ctx, q, articleID); err != nil {
+		return fmt.Errorf("delete translations: %w", err)
+	}
+	return nil
+}

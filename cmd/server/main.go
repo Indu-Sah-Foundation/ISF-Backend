@@ -15,6 +15,7 @@ import (
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
 	"isf-backend/internal/people"
+	"isf-backend/internal/translate"
 )
 
 func main() {
@@ -48,13 +49,17 @@ func main() {
 	}
 	defer redisCache.Close()
 
+	translator := translate.NewClient(cfg.TranslatorEndpoint, cfg.TranslatorKey, cfg.TranslatorRegion)
+	translateHandler := translate.NewHandler(translator)
+
 	articleRepo := articles.NewRepo(pool)
-	articleSvc := articles.NewService(articleRepo, redisCache)
+	articleSvc := articles.NewService(articleRepo, redisCache, translator)
 	articleHandler := articles.NewHandler(articleSvc)
 
 	r := gin.Default()
 	peopleHandler.RegisterRoutes(r)
 	articleHandler.RegisterRoutes(r)
+	translateHandler.RegisterRoutes(r)
 	// 4. Routes. Just /health for now -- App Service uses this for readiness
 	//    probes, and Front Door uses it to decide if the origin is healthy.
 	r.GET("/health", func(c *gin.Context) {

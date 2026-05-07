@@ -49,7 +49,8 @@ func (h *Handler) create(c *gin.Context) {
 
 func (h *Handler) get(c *gin.Context) {
 	slug := c.Param("slug")
-	a, err := h.svc.Get(c.Request.Context(), slug)
+	lang := c.Query("lang")
+	a, err := h.svc.Get(c.Request.Context(), slug, lang)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "article not found"})

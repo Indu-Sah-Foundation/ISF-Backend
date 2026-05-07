@@ -28,6 +28,10 @@ type Config struct {
 	GinMode string
 
 	RedisURL string
+
+	TranslatorEndpoint string
+	TranslatorKey      string
+	TranslatorRegion   string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -39,11 +43,14 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Port:        getEnvOr("PORT", "8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		JWTSecret:   os.Getenv("JWT_SECRET"),
-		GinMode:     getEnvOr("GIN_MODE", "debug"),
-		RedisURL:    os.Getenv("REDIS_URL"),
+		Port:               getEnvOr("PORT", "8080"),
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		JWTSecret:          os.Getenv("JWT_SECRET"),
+		GinMode:            getEnvOr("GIN_MODE", "debug"),
+		RedisURL:           os.Getenv("REDIS_URL"),
+		TranslatorEndpoint: getEnvOr("TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
+		TranslatorKey:      os.Getenv("TRANSLATOR_KEY"),
+		TranslatorRegion:   os.Getenv("TRANSLATOR_REGION"),
 	}
 
 	// Validate required fields.
@@ -52,6 +59,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
+	}
+	if cfg.TranslatorKey == "" {
+		return nil, fmt.Errorf("TRANSLATOR_KEY is required")
+	}
+	if cfg.TranslatorRegion == "" {
+		return nil, fmt.Errorf("TRANSLATOR_REGION is required")
 	}
 
 	return cfg, nil
