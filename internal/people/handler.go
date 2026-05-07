@@ -2,9 +2,10 @@ package people
 
 import (
 	"errors"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"net/http"
 )
 
 type Handler struct {
@@ -15,8 +16,8 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	g := r.Group("/people")
+func (h *Handler) RegisterRoutes(r *gin.Engine, adminMW ...gin.HandlerFunc) {
+	g := r.Group("/people", adminMW...)
 	g.POST("", h.create)
 	g.GET("", h.list)
 	g.GET("/:id", h.get)
