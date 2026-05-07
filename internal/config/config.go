@@ -32,6 +32,8 @@ type Config struct {
 	TranslatorEndpoint string
 	TranslatorKey      string
 	TranslatorRegion   string
+	AdminEmail         string
+	AdminPassword      string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -51,6 +53,8 @@ func Load() (*Config, error) {
 		TranslatorEndpoint: getEnvOr("TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
 		TranslatorKey:      os.Getenv("TRANSLATOR_KEY"),
 		TranslatorRegion:   os.Getenv("TRANSLATOR_REGION"),
+		AdminEmail:         os.Getenv("ADMIN_EMAIL"),
+		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
 	}
 
 	// Validate required fields.

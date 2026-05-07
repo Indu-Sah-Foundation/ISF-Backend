@@ -14,13 +14,14 @@ type Handler struct {
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-func (h *Handler) RegisterRoutes(r *gin.Engine) {
+func (h *Handler) RegisterRoutes(r *gin.Engine, adminMW ...gin.HandlerFunc) {
 	g := r.Group("/articles")
 	g.GET("", h.list)
 	g.GET("/:slug", h.get)
-	g.POST("", h.create)
-	g.PUT("/:id", h.update)
-	g.DELETE("/:id", h.delete)
+	admin := g.Group("", adminMW...)
+	admin.POST("", h.create)
+	admin.PUT("/:id", h.update)
+	admin.DELETE("/:id", h.delete)
 }
 
 func (h *Handler) list(c *gin.Context) {

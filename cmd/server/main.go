@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"isf-backend/internal/articles"
+	"isf-backend/internal/auth"
 	"isf-backend/internal/cache"
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
@@ -37,6 +38,20 @@ func main() {
 	defer pool.Close()
 	// 2. Configure Gin. "release" mode disables debug logging in prod.
 	gin.SetMode(cfg.GinMode)
+	authRepo := auth.NewRepo(pool)
+	authSvc := auth.NewService(authRepo, cfg.JWTSecret)
+	authHandler := auth.NewHandler(authSvc)
+
+	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
+		if err := authSvc.EnsureAdmin(ctx, cfg.AdminEmail, cfg.AdminPassword); err != nil {
+			log.Fatalf("bootstrap admin: %v", err)
+		}
+	}
+
+	adminMW := []gin.HandlerFunc{
+		auth.RequireAuth(cfg.JWTSecret),
+		auth.RequireRole("admin"),
+	}
 
 	// 3. Build the router. gin.Default() includes logger + recovery middleware.
 	peopleRepo := people.NewRepo(pool)
@@ -57,8 +72,9 @@ func main() {
 	articleHandler := articles.NewHandler(articleSvc)
 
 	r := gin.Default()
-	peopleHandler.RegisterRoutes(r)
-	articleHandler.RegisterRoutes(r)
+	authHandler.RegisterRoutes(r)
+	peopleHandler.RegisterRoutes(r, adminMW...)
+	articleHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
 	// 4. Routes. Just /health for now -- App Service uses this for readiness
 	//    probes, and Front Door uses it to decide if the origin is healthy.
