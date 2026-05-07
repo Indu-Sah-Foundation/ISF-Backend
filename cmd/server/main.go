@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"isf-backend/internal/articles"
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
 )
@@ -39,9 +40,14 @@ func main() {
 	peopleRepo := people.NewRepo(pool)
 	peopleSvc := people.NewService(peopleRepo)
 	peopleHandler := people.NewHandler(peopleSvc)
+
+	articleRepo := articles.NewRepo(pool)
+	articleSvc := articles.NewService(articleRepo)
+	articleHandler := articles.NewHandler(articleSvc)
+
 	r := gin.Default()
 	peopleHandler.RegisterRoutes(r)
-
+	articleHandler.RegisterRoutes(r)
 	// 4. Routes. Just /health for now -- App Service uses this for readiness
 	//    probes, and Front Door uses it to decide if the origin is healthy.
 	r.GET("/health", func(c *gin.Context) {
