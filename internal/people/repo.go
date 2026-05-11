@@ -53,10 +53,9 @@ func (r *Repo) GetByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	return &p, nil
 }
 
-func (r *Repo) List(ctx context.Context) ([]Person, error) {
-
-	const q = `SELECT id, name, email, created_at FROM people ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q)
+func (r *Repo) List(ctx context.Context, limit, offset int) ([]Person, error) {
+	const q = `SELECT id, name, email, created_at FROM people ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	rows, err := r.pool.Query(ctx, q, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list people: %w", err)
 	}
