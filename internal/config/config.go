@@ -34,6 +34,11 @@ type Config struct {
 	TranslatorRegion   string
 	AdminEmail         string
 	AdminPassword      string
+
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	DonationSuccessURL  string
+	DonationCancelURL   string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -45,16 +50,20 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Port:               getEnvOr("PORT", "8080"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
-		GinMode:            getEnvOr("GIN_MODE", "debug"),
-		RedisURL:           os.Getenv("REDIS_URL"),
-		TranslatorEndpoint: getEnvOr("TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
-		TranslatorKey:      os.Getenv("TRANSLATOR_KEY"),
-		TranslatorRegion:   os.Getenv("TRANSLATOR_REGION"),
-		AdminEmail:         os.Getenv("ADMIN_EMAIL"),
-		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
+		Port:                getEnvOr("PORT", "8080"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		JWTSecret:           os.Getenv("JWT_SECRET"),
+		GinMode:             getEnvOr("GIN_MODE", "debug"),
+		RedisURL:            os.Getenv("REDIS_URL"),
+		TranslatorEndpoint:  getEnvOr("TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"),
+		TranslatorKey:       os.Getenv("TRANSLATOR_KEY"),
+		TranslatorRegion:    os.Getenv("TRANSLATOR_REGION"),
+		AdminEmail:          os.Getenv("ADMIN_EMAIL"),
+		AdminPassword:       os.Getenv("ADMIN_PASSWORD"),
+		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
+		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		DonationSuccessURL:  getEnvOr("DONATION_SUCCESS_URL", "http://localhost:3000/donate/thanks"),
+		DonationCancelURL:   getEnvOr("DONATION_CANCEL_URL", "http://localhost:3000/donate"),
 	}
 
 	// Validate required fields.
@@ -69,6 +78,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.TranslatorRegion == "" {
 		return nil, fmt.Errorf("TRANSLATOR_REGION is required")
+	}
+	if cfg.StripeSecretKey == "" {
+		return nil, fmt.Errorf("STRIPE_SECRET_KEY is required")
+	}
+	if cfg.StripeWebhookSecret == "" {
+		return nil, fmt.Errorf("STRIPE_WEBHOOK_SECRET is required")
 	}
 
 	return cfg, nil
