@@ -48,12 +48,13 @@ func (r *Repo) GetBySlug(ctx context.Context, slug string) (*Article, error) {
 	return &a, nil
 }
 
-func (r *Repo) List(ctx context.Context, includeUnpublished bool) ([]Article, error) {
+func (r *Repo) List(ctx context.Context, includeUnpublished bool, limit, offset int) ([]Article, error) {
 	const q = `SELECT id, slug, title, body_md, source_lang, published_at, created_at, updated_at
 	FROM articles
 	WHERE $1 OR published_at IS NOT NULL
-	ORDER BY COALESCE(published_at, created_at) DESC`
-	rows, err := r.pool.Query(ctx, q, includeUnpublished)
+	ORDER BY COALESCE(published_at, created_at) DESC
+	LIMIT $2 OFFSET $3`
+	rows, err := r.pool.Query(ctx, q, includeUnpublished, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list articles: %w", err)
 	}
