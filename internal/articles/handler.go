@@ -3,9 +3,12 @@ package articles
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"isf-backend/internal/httperr"
 )
 
 type Handler struct {
@@ -24,25 +27,46 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, adminMW ...gin.HandlerFunc) {
 	admin.DELETE("/:id", h.delete)
 }
 
+// parseLimitOffset reads ?limit= and ?offset= query params with safe defaults.
+func parseLimitOffset(c *gin.Context, defaultLimit int) (limit, offset int) {
+	limit = defaultLimit
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			offset = n
+		}
+	}
+	return
+}
+
 func (h *Handler) list(c *gin.Context) {
-	articles, err := h.svc.List(c.Request.Context(), c.Query("include_unpublished") == "true")
+	limit, offset := parseLimitOffset(c, 20)
+	articles, err := h.svc.List(c.Request.Context(), c.Query("include_unpublished") == "true", limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		httperr.Respond(c, httperr.ErrInternal, err)
 		return
 	}
-	c.JSON(http.StatusOK, articles)
+	c.JSON(http.StatusOK, gin.H{
+		"items":  articles,
+		"limit":  limit,
+		"offset": offset,
+		"count":  len(articles),
+	})
 }
 
 func (h *Handler) create(c *gin.Context) {
 	var req CreateArticleRequest
-	err := c.ShouldBindJSON(&req)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httperr.BadRequest(c, err.Error())
 		return
 	}
 	a, err := h.svc.Create(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		httperr.Respond(c, httperr.ErrInternal, err)
 		return
 	}
 	c.JSON(http.StatusCreated, a)
@@ -54,55 +78,51 @@ func (h *Handler) get(c *gin.Context) {
 	a, err := h.svc.Get(c.Request.Context(), slug, lang)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "article not found"})
+			httperr.Respond(c, httperr.ErrNotFound.With("article not found"), nil)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		httperr.Respond(c, httperr.ErrInternal, err)
 		return
 	}
 	c.JSON(http.StatusOK, a)
 }
 
 func (h *Handler) update(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		httperr.Respond(c, httperr.ErrBadRequest.With("invalid id"), nil)
 		return
 	}
 	var req UpdateArticleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err.Error())
 		return
 	}
 	a, err := h.svc.Update(c.Request.Context(), id, req)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "article not found"})
+			httperr.Respond(c, httperr.ErrNotFound.With("article not found"), nil)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		httperr.Respond(c, httperr.ErrInternal, err)
 		return
 	}
 	c.JSON(http.StatusOK, a)
 }
 
 func (h *Handler) delete(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		httperr.Respond(c, httperr.ErrBadRequest.With("invalid id"), nil)
 		return
 	}
-	err = h.svc.Delete(c.Request.Context(), id)
-	if err != nil {
+	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "article not found"})
+			httperr.Respond(c, httperr.ErrNotFound.With("article not found"), nil)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		httperr.Respond(c, httperr.ErrInternal, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
-
 }

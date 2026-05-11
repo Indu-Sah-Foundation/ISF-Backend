@@ -16,7 +16,7 @@ import (
 type Repository interface {
 	Create(ctx context.Context, req CreateArticleRequest) (*Article, error)
 	GetBySlug(ctx context.Context, slug string) (*Article, error)
-	List(ctx context.Context, includeUnpublished bool) ([]Article, error)
+	List(ctx context.Context, includeUnpublished bool, limit, offset int) ([]Article, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateArticleRequest) (*Article, error)
 	Delete(ctx context.Context, id uuid.UUID) (string, error)
 
@@ -104,8 +104,14 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 	return &localized, nil
 }
 
-func (s *Service) List(ctx context.Context, includeUnpublished bool) ([]Article, error) {
-	return s.repo.List(ctx, includeUnpublished)
+func (s *Service) List(ctx context.Context, includeUnpublished bool, limit, offset int) ([]Article, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.List(ctx, includeUnpublished, limit, offset)
 }
 
 func (s *Service) Update(ctx context.Context, id uuid.UUID, req UpdateArticleRequest) (*Article, error) {

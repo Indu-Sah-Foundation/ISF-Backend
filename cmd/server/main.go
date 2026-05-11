@@ -1,28 +1,28 @@
 // Command server is the single entrypoint for the ISF backend.
-// It loads configuration, wires up dependencies (DB, cache, etc. -- coming
-// in later lessons), and starts the HTTP server.
 package main
 
 import (
 	"context"
 	"log"
-	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
 
 	"isf-backend/internal/articles"
 	"isf-backend/internal/auth"
 	"isf-backend/internal/cache"
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
+	"isf-backend/internal/health"
+	"isf-backend/internal/middleware"
+	"isf-backend/internal/payments"
 	"isf-backend/internal/people"
 	"isf-backend/internal/translate"
 )
 
 func main() {
-	// 1. Load config. If anything required is missing, log.Fatal exits with
-	//    status 1 and prints the error -- App Service will mark the container
-	//    as unhealthy and we'll see it in logs immediately.
+	// 1. Config + migrations + DB pool
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config load failed: %v", err)
@@ -33,14 +33,22 @@ func main() {
 	ctx := context.Background()
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("database connection failed %v", err)
+		log.Fatalf("database connection failed: %v", err)
 	}
 	defer pool.Close()
-	// 2. Configure Gin. "release" mode disables debug logging in prod.
+
+	// 2. Redis
+	redisCache, err := cache.NewRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("redis connection failed: %v", err)
+	}
+	defer redisCache.Close()
+
 	gin.SetMode(cfg.GinMode)
+
+	// 3. Auth wiring + bootstrap admin
 	authRepo := auth.NewRepo(pool)
 	authSvc := auth.NewService(authRepo, cfg.JWTSecret)
-	authHandler := auth.NewHandler(authSvc)
 
 	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
 		if err := authSvc.EnsureAdmin(ctx, cfg.AdminEmail, cfg.AdminPassword); err != nil {
@@ -48,21 +56,27 @@ func main() {
 		}
 	}
 
+	authHandler := auth.NewHandler(authSvc)
+
 	adminMW := []gin.HandlerFunc{
 		auth.RequireAuth(cfg.JWTSecret),
 		auth.RequireRole("admin"),
 	}
 
-	// 3. Build the router. gin.Default() includes logger + recovery middleware.
+	// 4. Domain wiring
+	stripeClient := payments.NewStripeClient(
+		cfg.StripeSecretKey,
+		cfg.StripeWebhookSecret,
+		cfg.DonationSuccessURL,
+		cfg.DonationCancelURL,
+	)
+	paymentsRepo := payments.NewRepo(pool)
+	paymentsSvc := payments.NewService(paymentsRepo, stripeClient)
+	paymentsHandler := payments.NewHandler(paymentsSvc)
+
 	peopleRepo := people.NewRepo(pool)
 	peopleSvc := people.NewService(peopleRepo)
 	peopleHandler := people.NewHandler(peopleSvc)
-
-	redisCache, err := cache.NewRedis(ctx, cfg.RedisURL)
-	if err != nil {
-		log.Fatalf("redis connection failed: %v", err)
-	}
-	defer redisCache.Close()
 
 	translator := translate.NewClient(cfg.TranslatorEndpoint, cfg.TranslatorKey, cfg.TranslatorRegion)
 	translateHandler := translate.NewHandler(translator)
@@ -71,30 +85,58 @@ func main() {
 	articleSvc := articles.NewService(articleRepo, redisCache, translator)
 	articleHandler := articles.NewHandler(articleSvc)
 
-	r := gin.Default()
-	authHandler.RegisterRoutes(r)
+	healthHandler := health.NewHandler(pool, redisCache)
+
+	// 5. Rate limiters
+	//    /auth/login: 5 attempts/min per IP -> brute-force defense
+	//    /donations/checkout: 30/min per IP -> bot/spam defense
+	loginLimiter := middleware.NewIPRateLimiter(rate.Every(12*time.Second), 5).Middleware()
+	checkoutLimiter := middleware.NewIPRateLimiter(rate.Every(2*time.Second), 30).Middleware()
+
+	// 6. Router
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(requestLogger()) // structured access log -> stdout -> App Insights ingestion
+
+	healthHandler.RegisterRoutes(r)
+	authHandler.RegisterRoutes(r, loginLimiter)
 	peopleHandler.RegisterRoutes(r, adminMW...)
 	articleHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
-	// 4. Routes. Just /health for now -- App Service uses this for readiness
-	//    probes, and Front Door uses it to decide if the origin is healthy.
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	r.GET("/health/db", func(c *gin.Context) {
-		if err := pool.Ping(c.Request.Context()); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable", "error": err.Error()})
-			return
+	paymentsHandler.RegisterRoutes(r, checkoutLimiter, gin.HandlerFunc(func(c *gin.Context) {
+		// Compose admin chain inline (Gin doesn't accept variadic for groups inside a fn)
+		for _, mw := range adminMW {
+			mw(c)
+			if c.IsAborted() {
+				return
+			}
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+		c.Next()
+	}))
 
-	// 5. Start the server. ":"+port means "listen on all interfaces".
-	//    r.Run blocks forever; if it returns, something went wrong.
+	// 7. Serve
 	addr := ":" + cfg.Port
 	log.Printf("listening on %s (mode=%s)", addr, cfg.GinMode)
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("server crashed: %v", err)
+	}
+}
+
+// requestLogger writes one line per request in a structured-ish format that
+// App Service's automatic Application Insights ingestion picks up cleanly.
+// Format: method path status duration_ms client_ip
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		dur := time.Since(start)
+		log.Printf(
+			"http method=%s path=%s status=%d dur_ms=%d ip=%s",
+			c.Request.Method,
+			c.Request.URL.Path,
+			c.Writer.Status(),
+			dur.Milliseconds(),
+			c.ClientIP(),
+		)
 	}
 }
