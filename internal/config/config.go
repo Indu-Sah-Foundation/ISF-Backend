@@ -39,6 +39,9 @@ type Config struct {
 	StripeWebhookSecret string
 	DonationSuccessURL  string
 	DonationCancelURL   string
+
+	StorageConnectionString string
+	ImagesContainer         string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -64,6 +67,9 @@ func Load() (*Config, error) {
 		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
 		DonationSuccessURL:  getEnvOr("DONATION_SUCCESS_URL", "http://localhost:3000/donate/thanks"),
 		DonationCancelURL:   getEnvOr("DONATION_CANCEL_URL", "http://localhost:3000/donate"),
+
+		StorageConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
+		ImagesContainer:         getEnvOr("IMAGES_CONTAINER", "images"),
 	}
 
 	// Validate required fields.
