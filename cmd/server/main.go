@@ -18,6 +18,7 @@ import (
 	"isf-backend/internal/middleware"
 	"isf-backend/internal/payments"
 	"isf-backend/internal/people"
+	"isf-backend/internal/storage"
 	"isf-backend/internal/translate"
 )
 
@@ -87,6 +88,18 @@ func main() {
 
 	healthHandler := health.NewHandler(pool, redisCache)
 
+	// Image uploads (admin only)
+	var storageHandler *storage.Handler
+	if cfg.StorageConnectionString != "" {
+		storageClient, err := storage.NewClient(cfg.StorageConnectionString, cfg.ImagesContainer)
+		if err != nil {
+			log.Fatalf("storage client init failed: %v", err)
+		}
+		storageHandler = storage.NewHandler(storageClient)
+	} else {
+		log.Printf("warning: AZURE_STORAGE_CONNECTION_STRING not set, /admin/images/sas disabled")
+	}
+
 	// 5. Rate limiters
 	//    /auth/login: 5 attempts/min per IP -> brute-force defense
 	//    /donations/checkout: 30/min per IP -> bot/spam defense
@@ -103,6 +116,9 @@ func main() {
 	peopleHandler.RegisterRoutes(r, adminMW...)
 	articleHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
+	if storageHandler != nil {
+		storageHandler.RegisterRoutes(r, adminMW...)
+	}
 	paymentsHandler.RegisterRoutes(r, checkoutLimiter, gin.HandlerFunc(func(c *gin.Context) {
 		// Compose admin chain inline (Gin doesn't accept variadic for groups inside a fn)
 		for _, mw := range adminMW {
