@@ -1,17 +1,83 @@
 package articles
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/renderer/html"
 
 	"isf-backend/internal/cache"
 )
+
+
+var mdRenderer = goldmark.New(goldmark.WithRendererOptions(html.WithUnsafe()))
+
+var htmlBodyRe = regexp.MustCompile(`(?i)^\s*<(p|h[1-6]|div|ul|ol|blockquote|figure|span|strong|em|img|article|section)\b`)
+
+// imgTagRe matches a full <img …> tag (self-closing or not).
+var imgTagRe = regexp.MustCompile(`(?i)<img\b[^>]*>`)
+
+// preTranslateMarker is a token Azure won't touch (no letters / no
+// punctuation it would translate). We stuff one of these in place of
+// every <img> tag, send the rest to the translator, then put each img
+// back exactly. This is bulletproof — images survive intact for every
+// language and every Azure quirk.
+const imgPlaceholderPrefix = "¦¦IMG"
+const imgPlaceholderSuffix = "¦¦"
+
+// prepBodyForTranslation produces (textToTranslate, restoreFn). Pipeline:
+//
+//  1. If the body looks like markdown, render it to HTML via goldmark so
+//     `#`, `*`, `![]` etc. become real tags Azure won't translate.
+//  2. Replace every <img> with an inert placeholder token.
+//  3. Hand the rest to Azure with textType=html.
+//  4. Caller runs restoreFn on the translated string to splice images
+//     back in their original order.
+func prepBodyForTranslation(body string) (string, func(string) string) {
+	htmlBody := body
+	if !htmlBodyRe.MatchString(body) {
+		var buf bytes.Buffer
+		if err := mdRenderer.Convert([]byte(body), &buf); err == nil {
+			htmlBody = buf.String()
+		} else {
+			log.Printf("articles: markdown render failed, using raw body: %v", err)
+		}
+	}
+
+	// Pull <img> tags out and replace with placeholders.
+	imgs := make([]string, 0)
+	withPlaceholders := imgTagRe.ReplaceAllStringFunc(htmlBody, func(tag string) string {
+		i := len(imgs)
+		imgs = append(imgs, tag)
+		return imgPlaceholderPrefix + fmt.Sprint(i) + imgPlaceholderSuffix
+	})
+
+	restore := func(translated string) string {
+		out := translated
+		for i, tag := range imgs {
+			token := imgPlaceholderPrefix + fmt.Sprint(i) + imgPlaceholderSuffix
+			out = strings.Replace(out, token, tag, 1)
+			// Azure sometimes capitalizes or spaces the token — try a
+			// loose match as a fallback.
+			altToken := strings.ReplaceAll(token, " ", "")
+			if out == translated && altToken != token {
+				out = strings.Replace(out, altToken, tag, 1)
+			}
+		}
+		return out
+	}
+
+	return withPlaceholders, restore
+}
 
 type Repository interface {
 	Create(ctx context.Context, req CreateArticleRequest) (*Article, error)
@@ -85,14 +151,31 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 	}
 
 	if errors.Is(terr, ErrNotFound) {
-		translated, terr := s.translator.Translate(ctx, []string{original.Title, original.BodyMD}, lang)
+		// Pipeline:
+		//   1. Render markdown→HTML if needed
+		//   2. Replace <img> tags with inert placeholders
+		//   3. Translate
+		//   4. Splice the original <img> tags back
+		bodyForTranslate, restoreImages := prepBodyForTranslation(original.BodyMD)
+		translated, terr := s.translator.Translate(ctx, []string{original.Title, bodyForTranslate}, lang)
 		if terr != nil {
-			return nil, fmt.Errorf("translate: %w", terr)
+			// Don't 500 the reader — log the underlying Azure error and
+			// gracefully serve the source-language article instead. Lang
+			// dropdowns flip the user back to that view; better than a
+			// broken page. We also DON'T cache this in
+			// article_translations so the next request will retry.
+			log.Printf("articles: TRANSLATE FAILED for %s/%s, serving source: %v", slug, lang, terr)
+			return original, nil
 		}
-		title, body = translated[0], translated[1]
-		if serr := s.repo.SaveTranslation(ctx, original.ID, lang, title, body); serr != nil {
-			log.Printf("save translation failed for %s/%s: %v", slug, lang, serr)
+		title = translated[0]
+		body = restoreImages(translated[1])
 
+		log.Printf("articles: translated %s → %s (title=%dB, body=%dB), saving",
+			slug, lang, len(title), len(body))
+		if serr := s.repo.SaveTranslation(ctx, original.ID, lang, title, body); serr != nil {
+			// Don't return — translation is in hand, still serve the
+			// reader. But log loudly so we notice persistent DB issues.
+			log.Printf("articles: SAVE TRANSLATION FAILED for %s/%s: %v", slug, lang, serr)
 		}
 	}
 
