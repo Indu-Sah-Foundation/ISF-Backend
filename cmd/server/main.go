@@ -13,8 +13,10 @@ import (
 	"isf-backend/internal/articles"
 	"isf-backend/internal/auth"
 	"isf-backend/internal/cache"
+	"isf-backend/internal/cleanup"
 	"isf-backend/internal/config"
 	"isf-backend/internal/db"
+	"isf-backend/internal/gallery"
 	"isf-backend/internal/health"
 	"isf-backend/internal/middleware"
 	"isf-backend/internal/payments"
@@ -101,17 +103,33 @@ func main() {
 
 	healthHandler := health.NewHandler(pool, redisCache)
 
-	// Image uploads (admin only)
-	var storageHandler *storage.Handler
+	// Image uploads + blob lifecycle (admin only). Storage client is also
+	// shared with the gallery service (for blob-delete on row-delete) and
+	// the cleanup module (for orphan scan + remove).
+	var (
+		storageClient   *storage.Client
+		storageHandler  *storage.Handler
+		cleanupHandler  *cleanup.Handler
+	)
 	if cfg.StorageConnectionString != "" {
-		storageClient, err := storage.NewClient(cfg.StorageConnectionString, cfg.ImagesContainer)
+		c, err := storage.NewClient(cfg.StorageConnectionString, cfg.ImagesContainer)
 		if err != nil {
 			log.Fatalf("storage client init failed: %v", err)
 		}
-		storageHandler = storage.NewHandler(storageClient)
+		storageClient = c
+		storageHandler = storage.NewHandler(c)
+		cleanupHandler = cleanup.NewHandler(cleanup.New(pool, c))
 	} else {
-		log.Printf("warning: AZURE_STORAGE_CONNECTION_STRING not set, /admin/images/sas disabled")
+		log.Printf("warning: AZURE_STORAGE_CONNECTION_STRING not set, /admin/images/sas + /admin/images/cleanup disabled")
 	}
+
+	// Gallery — the storage client is optional; if set, deleting a gallery
+	// row also deletes the underlying blob.
+	var galleryBlob gallery.BlobDeleter
+	if storageClient != nil {
+		galleryBlob = storageClient
+	}
+	galleryHandler := gallery.NewHandler(gallery.NewService(gallery.NewRepo(pool), galleryBlob))
 
 	// 5. Rate limiters
 	//    /auth/login: 5 attempts/min per IP -> brute-force defense
@@ -132,9 +150,13 @@ func main() {
 	achievementsHandler.RegisterRoutes(r, adminMW...)
 	volunteersHandler.RegisterRoutes(r, adminMW...)
 	teamHandler.RegisterRoutes(r, adminMW...)
+	galleryHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
 	if storageHandler != nil {
 		storageHandler.RegisterRoutes(r, adminMW...)
+	}
+	if cleanupHandler != nil {
+		cleanupHandler.RegisterRoutes(r, adminMW...)
 	}
 	paymentsHandler.RegisterRoutes(r, checkoutLimiter, gin.HandlerFunc(func(c *gin.Context) {
 		// Compose admin chain inline (Gin doesn't accept variadic for groups inside a fn)

@@ -7,11 +7,15 @@
 package storage
 
 import (
+	"context"
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
 )
 
@@ -103,4 +107,86 @@ func (c *Client) GenerateUploadSAS(blobName string, ttl time.Duration) (*SASResu
 		BlobName:  blobName,
 		ExpiresAt: expiry,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Container management — list + delete. Used by:
+//   - gallery.Service.Delete: removes the blob when its DB row is deleted
+//   - the orphan-cleanup admin endpoint: lists every blob, deletes the
+//     ones that no DB row references anymore
+// ---------------------------------------------------------------------------
+
+// ListAll returns every blob name in the container. Cheap on small
+// containers; for very large ones add paging.
+func (c *Client) ListAll(ctx context.Context) ([]string, error) {
+	containerURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s", c.accountName, c.container)
+	client, err := container.NewClientWithSharedKeyCredential(containerURL, c.cred, nil)
+	if err != nil {
+		return nil, fmt.Errorf("container client: %w", err)
+	}
+	pager := client.NewListBlobsFlatPager(nil)
+	var names []string
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list blobs: %w", err)
+		}
+		for _, b := range page.Segment.BlobItems {
+			if b.Name != nil {
+				names = append(names, *b.Name)
+			}
+		}
+	}
+	return names, nil
+}
+
+// Delete removes a blob by its name (path inside the container).
+func (c *Client) Delete(ctx context.Context, blobName string) error {
+	containerURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s", c.accountName, c.container)
+	client, err := container.NewClientWithSharedKeyCredential(containerURL, c.cred, nil)
+	if err != nil {
+		return fmt.Errorf("container client: %w", err)
+	}
+	blobClient := client.NewBlobClient(blobName)
+	if _, err := blobClient.Delete(ctx, nil); err != nil {
+		return fmt.Errorf("delete blob %s: %w", blobName, err)
+	}
+	return nil
+}
+
+// DeleteByURL converts a public blob URL into a blob name and deletes
+// it. Quietly no-ops if the URL doesn't belong to this container — so
+// pasting an arbitrary external image URL into a gallery item / project
+// hero won't error on cleanup.
+func (c *Client) DeleteByURL(ctx context.Context, blobURL string) error {
+	name, ok := c.blobNameFromURL(blobURL)
+	if !ok {
+		return nil
+	}
+	return c.Delete(ctx, name)
+}
+
+// PublicURL is the prefix that all this client's blob URLs share.
+func (c *Client) PublicURL() string {
+	return fmt.Sprintf("https://%s.blob.core.windows.net/%s/", c.accountName, c.container)
+}
+
+// blobNameFromURL parses a full public URL and returns the blob name
+// (i.e. the part after the container) if and only if the URL is
+// actually for this container. Returns ok=false for anything else.
+func (c *Client) blobNameFromURL(rawURL string) (string, bool) {
+	prefix := c.PublicURL()
+	if !strings.HasPrefix(rawURL, prefix) {
+		return "", false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+	// /container/path/to/blob.jpg -> path/to/blob.jpg
+	parts := strings.SplitN(u.Path, "/", 3)
+	if len(parts) < 3 {
+		return "", false
+	}
+	return path.Clean(parts[2]), true
 }
