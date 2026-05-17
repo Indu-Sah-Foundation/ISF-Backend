@@ -141,8 +141,11 @@ func (c *Cleanup) Run(ctx context.Context, dryRun bool) (*Result, error) {
 
 	prefix := c.blob.PublicURL()
 	out := &Result{
-		TotalBlobs: len(names),
-		DryRun:     dryRun,
+		TotalBlobs:   len(names),
+		DryRun:       dryRun,
+		Orphans:      []string{},
+		Deleted:      []string{},
+		DeleteErrors: []string{},
 	}
 	for _, name := range names {
 		full := prefix + name
