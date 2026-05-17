@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 
+	"isf-backend/internal/achievements"
 	"isf-backend/internal/articles"
 	"isf-backend/internal/auth"
 	"isf-backend/internal/cache"
@@ -18,8 +19,10 @@ import (
 	"isf-backend/internal/middleware"
 	"isf-backend/internal/payments"
 	"isf-backend/internal/people"
+	"isf-backend/internal/projects"
 	"isf-backend/internal/storage"
 	"isf-backend/internal/translate"
+	"isf-backend/internal/volunteers"
 )
 
 func main() {
@@ -86,6 +89,14 @@ func main() {
 	articleSvc := articles.NewService(articleRepo, redisCache, translator)
 	articleHandler := articles.NewHandler(articleSvc)
 
+	// Projects / Achievements / Volunteers: thin CRUD pipelines following the
+	// same repo→service→handler convention as articles. No caching layer here
+	// — the page-load volumes are tiny and Front Door does edge caching of
+	// the GET responses for us.
+	projectsHandler := projects.NewHandler(projects.NewService(projects.NewRepo(pool)))
+	achievementsHandler := achievements.NewHandler(achievements.NewService(achievements.NewRepo(pool)))
+	volunteersHandler := volunteers.NewHandler(volunteers.NewService(volunteers.NewRepo(pool)))
+
 	healthHandler := health.NewHandler(pool, redisCache)
 
 	// Image uploads (admin only)
@@ -115,6 +126,9 @@ func main() {
 	authHandler.RegisterRoutes(r, loginLimiter)
 	peopleHandler.RegisterRoutes(r, adminMW...)
 	articleHandler.RegisterRoutes(r, adminMW...)
+	projectsHandler.RegisterRoutes(r, adminMW...)
+	achievementsHandler.RegisterRoutes(r, adminMW...)
+	volunteersHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
 	if storageHandler != nil {
 		storageHandler.RegisterRoutes(r, adminMW...)
