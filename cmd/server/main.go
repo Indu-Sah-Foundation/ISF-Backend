@@ -21,6 +21,7 @@ import (
 	"isf-backend/internal/people"
 	"isf-backend/internal/projects"
 	"isf-backend/internal/storage"
+	"isf-backend/internal/team"
 	"isf-backend/internal/translate"
 	"isf-backend/internal/volunteers"
 )
@@ -96,6 +97,7 @@ func main() {
 	projectsHandler := projects.NewHandler(projects.NewService(projects.NewRepo(pool)))
 	achievementsHandler := achievements.NewHandler(achievements.NewService(achievements.NewRepo(pool)))
 	volunteersHandler := volunteers.NewHandler(volunteers.NewService(volunteers.NewRepo(pool)))
+	teamHandler := team.NewHandler(team.NewService(team.NewRepo(pool)))
 
 	healthHandler := health.NewHandler(pool, redisCache)
 
@@ -129,6 +131,7 @@ func main() {
 	projectsHandler.RegisterRoutes(r, adminMW...)
 	achievementsHandler.RegisterRoutes(r, adminMW...)
 	volunteersHandler.RegisterRoutes(r, adminMW...)
+	teamHandler.RegisterRoutes(r, adminMW...)
 	translateHandler.RegisterRoutes(r)
 	if storageHandler != nil {
 		storageHandler.RegisterRoutes(r, adminMW...)
