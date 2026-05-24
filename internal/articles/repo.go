@@ -24,11 +24,11 @@ func (r *Repo) Create(ctx context.Context, req CreateArticleRequest) (*Article, 
 	const q = `
 	INSERT INTO articles (slug, title, body_md, source_lang, published_at)
 	VALUES ($1, $2, $3, $4,
-			CASE WHEN $5::bool THEN NOW() ELSE NULL END)
+			CASE WHEN $5::bool THEN COALESCE($6::timestamptz, NOW()) ELSE NULL END)
 	RETURNING id, slug, title, body_md, source_lang, published_at, created_at, updated_at
 	`
 	var a Article
-	err := r.pool.QueryRow(ctx, q, req.Slug, req.Title, req.BodyMD, req.SourceLang, req.Publish).Scan(&a.ID, &a.Slug, &a.Title, &a.BodyMD, &a.SourceLang, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt)
+	err := r.pool.QueryRow(ctx, q, req.Slug, req.Title, req.BodyMD, req.SourceLang, req.Publish, req.PublishedAt).Scan(&a.ID, &a.Slug, &a.Title, &a.BodyMD, &a.SourceLang, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create article: %w", err)
 	}
@@ -81,7 +81,7 @@ func (r *Repo) Update(ctx context.Context, id uuid.UUID, req UpdateArticleReques
 		body_md      = COALESCE($3, body_md),
 		published_at = CASE
 						   WHEN $4::bool IS NULL THEN published_at
-						   WHEN $4::bool = true THEN COALESCE(published_at, NOW())
+						   WHEN $4::bool = true THEN COALESCE($5::timestamptz, published_at, NOW())
 						   ELSE NULL
 					   END,
 		updated_at   = NOW()
@@ -89,7 +89,7 @@ func (r *Repo) Update(ctx context.Context, id uuid.UUID, req UpdateArticleReques
 	RETURNING id, slug, title, body_md, source_lang, published_at, created_at, updated_at
 `
 	var a Article
-	err := r.pool.QueryRow(ctx, q, id, req.Title, req.BodyMD, req.Publish).Scan(&a.ID, &a.Slug, &a.Title, &a.BodyMD, &a.SourceLang, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt)
+	err := r.pool.QueryRow(ctx, q, id, req.Title, req.BodyMD, req.Publish, req.PublishedAt).Scan(&a.ID, &a.Slug, &a.Title, &a.BodyMD, &a.SourceLang, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

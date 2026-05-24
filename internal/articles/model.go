@@ -18,15 +18,17 @@ type Article struct {
 }
 
 type CreateArticleRequest struct {
-	Slug       string `json:"slug" binding:"required,min=1,max=200"`
-	Title      string `json:"title" binding:"required,min=1,max=500"`
-	BodyMD     string `json:"body_md" binding:"required,min=1"`
-	SourceLang string `json:"source_lang" binding:"omitempty,len=2"`
-	Publish    bool   `json:"publish"`
+	Slug       string     `json:"slug" binding:"required,min=1,max=200"`
+	Title      string     `json:"title" binding:"required,min=1,max=500"`
+	BodyMD     string     `json:"body_md" binding:"required,min=1"`
+	SourceLang string     `json:"source_lang" binding:"omitempty,len=2"`
+	Publish    bool       `json:"publish"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
 }
 
 type UpdateArticleRequest struct {
-	Title   *string `json:"title,omitempty"`
-	BodyMD  *string `json:"body_md,omitempty"`
-	Publish *bool   `json:"publish,omitempty"`
+	Title       *string    `json:"title,omitempty"`
+	BodyMD      *string    `json:"body_md,omitempty"`
+	Publish     *bool      `json:"publish,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
 }

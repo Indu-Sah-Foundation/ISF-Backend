@@ -1,14 +1,40 @@
 package payments
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 
 	"isf-backend/internal/httperr"
 )
+
+func friendlyValidationError(err error) string {
+	var ve validator.ValidationErrors
+	if !errors.As(err, &ve) || len(ve) == 0 {
+		return err.Error()
+	}
+	fe := ve[0]
+	switch fe.Field() {
+	case "AmountCents":
+		switch fe.Tag() {
+		case "required":
+			return "Please choose a donation amount."
+		case "min":
+			return "The minimum donation is $1."
+		case "max":
+			return "Donations are capped at $100,000. For larger gifts, please contact us directly."
+		}
+		return "Donation amount is invalid."
+	case "Email":
+		return "Please enter a valid email address."
+	}
+	return fmt.Sprintf("%s is invalid (%s).", fe.Field(), fe.Tag())
+}
 
 type Handler struct {
 	svc *Service
@@ -49,7 +75,7 @@ func (h *Handler) amounts(c *gin.Context) {
 func (h *Handler) checkout(c *gin.Context) {
 	var req CheckoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httperr.BadRequest(c, err.Error())
+		httperr.BadRequest(c, friendlyValidationError(err))
 		return
 	}
 	resp, err := h.svc.Checkout(c.Request.Context(), req)
