@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/yuin/goldmark"
@@ -48,6 +49,13 @@ var emailRe = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 // hashtagRe — Twitter-style hashtags. Translator may try to translate
 // the word after #.
 var hashtagRe = regexp.MustCompile(`(?:^|\s)(#[A-Za-z0-9_]{2,30})`)
+
+// numberRe — standalone integers / decimals in body text. Wrapped in
+// translate="no" so they always render as Western digits. Without this
+// Azure transliterates SOME numbers to the target script ("120" →
+// "१२०" in Hindi) and leaves OTHERS as Western, producing the visually
+// jarring mix Nepali readers see today.
+var numberRe = regexp.MustCompile(`(^|[\s>(\[])([0-9]+(?:[.,][0-9]+)*)(?=[\s<.,;!?)\]]|$)`)
 
 // properNounRe — names, acronyms, programs that should appear
 // verbatim in every language. Add to this list as needed.
@@ -124,11 +132,21 @@ func protectInlineTokens(html string) string {
 	// would still be invalid HTML, so we double-check by skipping
 	// matches that are immediately preceded by `"` or `'`.
 	html = properNounRe.ReplaceAllStringFunc(html, func(m string) string {
-		// We can't easily peek behind with ReplaceAllStringFunc; rely
-		// on the word-boundary that's already in properNounRe to keep
-		// us out of URLs (a `/` before "ISF" wouldn't be a word boundary).
 		return wrapNoTranslate(m)
 	})
+
+	// Numbers last — wrap every standalone integer/decimal in body
+	// text so Azure can't transliterate it. Keeps digits Western
+	// across every target language, matching what modern Nepali /
+	// Hindi web copy actually does (mixed-script numerals look broken).
+	html = numberRe.ReplaceAllStringFunc(html, func(m string) string {
+		sub := numberRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return sub[1] + wrapNoTranslate(sub[2])
+	})
+
 	return html
 }
 
@@ -229,12 +247,14 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 			}
 		}
 
-		// ----- Strip the translate="no" wrappers we added around
-		//       URLs / emails / hashtags / proper nouns. Those served
-		//       only to protect the inner text during translation — the
-		//       reader doesn't need an extra <span>.
-		out = stripNoTranslateWrappers(out)
-
+		// IMPORTANT: do NOT strip the `<span translate="no">` wrappers
+		// around proper nouns / URLs / numbers. Azure's HTML normalizer
+		// frequently EATS the whitespace between an `</span>` and the
+		// next word in the target script — so stripping the wrapper
+		// produces smushed text like "Indu Sah Foundationमानवीय".
+		// Leaving the span in place is visually identical (spans render
+		// as invisible inline containers) and preserves spacing
+		// because Azure has to keep whitespace INSIDE the span content.
 		return out
 	}
 
@@ -367,24 +387,54 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 			return original, nil
 		}
 
-		rawTitle := stripNoTranslateWrappers(translated[0])
-		title = rawTitle
+		// Titles: we DO strip wrappers because titles render inside an
+		// <h1> and a stray <span> inside a heading is uglier than the
+		// rare whitespace edge case (titles don't usually have mixed
+		// scripts back-to-back).
+		title = stripNoTranslateWrappers(translated[0])
 		body = restoreImages(translated[1])
 
-		// Sanity checks — refuse to cache an obviously broken translation.
-		if strings.Contains(body, `class="isf-img-tok"`) ||
-			strings.Contains(body, "¦¦IMG") ||
-			strings.Contains(body, `class="isf-cmt-tok"`) {
-			log.Printf("articles: WARN translated body for %s/%s still contains placeholders, NOT caching",
-				slug, lang)
+		// ----- Sanity gates: never cache an obviously broken translation.
+		// Each failure path serves the translation for THIS request (so
+		// the reader isn't blocked) but skips the SaveTranslation call,
+		// so the next request retries fresh.
+		fail := func(reason string) (*Article, error) {
+			log.Printf("articles: WARN %s for %s/%s, NOT caching", reason, slug, lang)
 			localized := *original
 			localized.Title = title
 			localized.BodyMD = body
 			return &localized, nil
 		}
+
+		if strings.Contains(body, `class="isf-img-tok"`) ||
+			strings.Contains(body, "¦¦IMG") ||
+			strings.Contains(body, `class="isf-cmt-tok"`) {
+			return fail("translated body still contains placeholders")
+		}
 		if title == "" {
 			log.Printf("articles: WARN empty title for %s/%s, serving source", slug, lang)
 			return original, nil
+		}
+		// Length sanity: catch the case where Azure returns a stub
+		// (truncation, silent failure, content-policy block) instead
+		// of a real translation. The naive "byte length" check is
+		// misleading because byte counts vary 3x across UTF-8 scripts
+		// (Devanagari = 3 bytes/char vs Latin = 1). We compare
+		// CHARACTER counts instead.
+		//
+		// Skip entirely for short source bodies — a 50-word post might
+		// legitimately translate into 30 words depending on language,
+		// and the false-positive cost outweighs the benefit.
+		srcChars := utf8.RuneCountInString(original.BodyMD)
+		dstChars := utf8.RuneCountInString(body)
+		const (
+			minSourceChars = 200 // skip check below this size
+			minRatio       = 30  // %, drastically permissive
+		)
+		if srcChars > minSourceChars && dstChars*100 < srcChars*minRatio {
+			return fail(fmt.Sprintf(
+				"translated body shrank suspiciously (%d→%d chars, %d%% of source — threshold %d%%)",
+				srcChars, dstChars, dstChars*100/max(srcChars, 1), minRatio))
 		}
 
 		log.Printf("articles: translated %s → %s (title=%dB, body=%dB), saving",
