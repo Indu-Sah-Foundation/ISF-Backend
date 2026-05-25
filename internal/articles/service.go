@@ -55,7 +55,7 @@ var hashtagRe = regexp.MustCompile(`(?:^|\s)(#[A-Za-z0-9_]{2,30})`)
 // Azure transliterates SOME numbers to the target script ("120" →
 // "१२०" in Hindi) and leaves OTHERS as Western, producing the visually
 // jarring mix Nepali readers see today.
-var numberRe = regexp.MustCompile(`(^|[\s>(\[])([0-9]+(?:[.,][0-9]+)*)(?=[\s<.,;!?)\]]|$)`)
+var numberRe = regexp.MustCompile(`(^|[\s>(\[])([0-9]+(?:[.,][0-9]+)*)\b`)
 
 // properNounRe — names, acronyms, programs that should appear
 // verbatim in every language. Add to this list as needed.
@@ -217,17 +217,9 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 				out = out[:loc[0]] + tag + out[loc[1]:]
 				continue
 			}
-			// Legacy: rows translated under the old ¦¦IMG{n}¦¦ scheme.
-			legacy := regexp.MustCompile(
-				`¦¦\s*(IMG|आईएमजी|आइएमजी|إيمج|آی\s*ام\s*جی|IMAGEN|IMAGEM)\s*` +
-					fmt.Sprint(i) +
-					`\s*¦¦`)
-			if loc := legacy.FindStringIndex(out); loc != nil {
-				out = out[:loc[0]] + tag + out[loc[1]:]
-				continue
-			}
-			// We tried — log loudly so production catches translator
-			// regressions instead of silently shipping broken pages.
+			// No match by either path. Log loudly so production catches
+			// translator regressions instead of silently shipping broken
+			// pages. The sanity gate in Get() then refuses to cache.
 			log.Printf("articles: WARN unmatched img placeholder %d in translated body (img stayed missing)", i)
 		}
 
@@ -407,7 +399,6 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 		}
 
 		if strings.Contains(body, `class="isf-img-tok"`) ||
-			strings.Contains(body, "¦¦IMG") ||
 			strings.Contains(body, `class="isf-cmt-tok"`) {
 			return fail("translated body still contains placeholders")
 		}
