@@ -44,9 +44,6 @@ type UpdateItemRequest struct {
 	Published *bool     `json:"published,omitempty"`
 }
 
-// Tag is one entry in the admin-curated gallery_tags list. The Name is
-// what appears on the public page and what's stored in the per-image
-// Item.Tags array.
 type Tag struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
