@@ -42,6 +42,8 @@ type Config struct {
 
 	StorageConnectionString string
 	ImagesContainer         string
+
+	APIKey string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -70,6 +72,8 @@ func Load() (*Config, error) {
 
 		StorageConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
 		ImagesContainer:         getEnvOr("IMAGES_CONTAINER", "images"),
+
+		APIKey: os.Getenv("API_KEY"),
 	}
 
 	// Validate required fields.
@@ -90,6 +94,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.StripeWebhookSecret == "" {
 		return nil, fmt.Errorf("STRIPE_WEBHOOK_SECRET is required")
+	}
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("API_KEY is required")
 	}
 
 	return cfg, nil

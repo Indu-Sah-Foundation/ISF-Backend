@@ -147,6 +147,12 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(requestLogger()) // structured access log -> stdout -> App Insights ingestion
 
+	r.Use(auth.RequireAPIKey(cfg.APIKey, []string{
+		"/health",
+		"/ready",
+		"/donations/webhook",
+	}))
+
 	healthHandler.RegisterRoutes(r)
 	authHandler.RegisterRoutes(r, loginLimiter)
 	peopleHandler.RegisterRoutes(r, adminMW...)
