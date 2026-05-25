@@ -42,7 +42,20 @@ type translateOutput struct {
 	} `json:"translations"`
 }
 
-func (c *Client) Translate(ctx context.Context, texts []string, targetLang string) ([]string, error) {
+// Translate sends every string in texts to Azure Translator with the
+// given source language hint (sourceLang may be "" to let Azure
+// auto-detect — useful for arbitrary input, but for our use case we
+// always know the source language and pass it explicitly so that:
+//
+//   1. Short text like a 4-word title isn't misclassified
+//   2. Mixed-language bodies (English with a Nepali quote) translate
+//      consistently
+//   3. We never get back unchanged text just because Azure decided the
+//      source was already the target
+//
+// textType=html always — HTML tags + translate="no" attributes are
+// preserved, which our placeholder system relies on.
+func (c *Client) Translate(ctx context.Context, texts []string, sourceLang, targetLang string) ([]string, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -62,6 +75,9 @@ func (c *Client) Translate(ctx context.Context, texts []string, targetLang strin
 	q := u.Query()
 	q.Set("api-version", "3.0")
 	q.Set("to", targetLang)
+	if sourceLang != "" {
+		q.Set("from", sourceLang)
+	}
 	q.Set("textType", "html")
 	u.RawQuery = q.Encode()
 
