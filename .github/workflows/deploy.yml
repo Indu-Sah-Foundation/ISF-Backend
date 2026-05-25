@@ -12,12 +12,51 @@ env:
   APP_NAME: isfinfa  # Must match your actual Azure resources
 
 jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: isf
+          POSTGRES_PASSWORD: isf
+          POSTGRES_DB: isf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U isf"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run e2e suite
+        env:
+          TEST_DATABASE_URL: postgres://isf:isf@localhost:5432/isf_test?sslmode=disable
+          TEST_REDIS_URL: redis://localhost:6379/0
+        run: |
+          go test ./internal/e2e -v -count=1 -timeout 5m
+
   deploy:
+    needs: e2e   # ← only deploys if e2e job passed
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Azure Login via OIDC
         uses: azure/login@v2
         with:
