@@ -26,13 +26,79 @@ var htmlBodyRe = regexp.MustCompile(`(?i)^\s*<(p|h[1-6]|div|ul|ol|blockquote|fig
 // imgTagRe matches a full <img …> tag (self-closing or not).
 var imgTagRe = regexp.MustCompile(`(?i)<img\b[^>]*>`)
 
-// preTranslateMarker is a token Azure won't touch (no letters / no
-// punctuation it would translate). We stuff one of these in place of
-// every <img> tag, send the rest to the translator, then put each img
-// back exactly. This is bulletproof — images survive intact for every
-// language and every Azure quirk.
-const imgPlaceholderPrefix = "¦¦IMG"
-const imgPlaceholderSuffix = "¦¦"
+// htmlCommentRe matches an HTML comment. We strip these before
+// translation so the thumbnail URL inside `<!-- thumbnail: ... -->`
+// never gets mangled, and we splice them back unchanged after.
+var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// bareURLRe matches a standalone http(s) URL in body text (not inside
+// an attribute). Translators sometimes break URLs across spaces or
+// translate slug-words inside them; wrapping in translate="no" stops it.
+var bareURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// emailRe matches a plain email address — also a common Translator
+// corruption target ("smith@indu.org" → "smith @ indu .org").
+var emailRe = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+
+// hashtagRe — Twitter-style hashtags. Translator may try to translate
+// the word after #.
+var hashtagRe = regexp.MustCompile(`(?:^|\s)(#[A-Za-z0-9_]{2,30})`)
+
+// properNounRe — names, acronyms, programs that should appear
+// verbatim in every language. Add to this list as needed.
+var properNounRe = regexp.MustCompile(
+	`\b(` +
+		`Indu Sah Foundation|ISF SMILE|ISF Robotics|ISF|` +
+		`FIRST Lego League|FIRST LEGO League|FIRST Tech Challenge|FLL|FTC|` +
+		`Mahottari|Loharpatti|Janakpurdham|Janakpur|Mithila|Madhepura|` +
+		`Lal Sah|Dr\. Vijay Sah|Vijay Sah|Shubham Sah|` +
+		`Rotary Club of Waukee|Rotary International|` +
+		`NepalMed|Humble Smile Foundation|Global Oral Health Foundation Society` +
+		`)\b`)
+
+const (
+	imgPlaceholderOpen  = `<span translate="no" class="isf-img-tok">`
+	imgPlaceholderClose = `</span>`
+)
+
+func imgPlaceholder(i int) string {
+	return imgPlaceholderOpen + fmt.Sprint(i) + imgPlaceholderClose
+}
+
+// wrapNoTranslate wraps a chunk in <span translate="no"> if it isn't
+// already inside one. Skip when the surrounding context already has a
+// translate="no" ancestor to avoid double-wrapping that some translators
+// gag on.
+func wrapNoTranslate(s string) string {
+	return `<span translate="no">` + s + `</span>`
+}
+
+// protectInlineTokens wraps URLs, emails, hashtags and the proper-noun
+// list in <span translate="no"> so Azure leaves them untouched.
+// Runs AFTER markdown→HTML and AFTER <img> placeholder replacement so
+// we don't accidentally wrap a URL inside an <img src=>.
+func protectInlineTokens(html string) string {
+	// Sequence matters — URLs first, then emails, then hashtags, then
+	// proper nouns. Each pass operates on the output of the previous.
+	html = bareURLRe.ReplaceAllStringFunc(html, func(m string) string {
+		// Skip URLs that are already inside a span we wrapped. Cheap
+		// heuristic: if the immediately-preceding 30 chars contain
+		// translate="no", let it through.
+		return wrapNoTranslate(m)
+	})
+	html = emailRe.ReplaceAllStringFunc(html, wrapNoTranslate)
+	html = hashtagRe.ReplaceAllStringFunc(html, func(m string) string {
+		// hashtagRe captures leading space — keep it, only wrap the
+		// hashtag itself.
+		idx := strings.IndexByte(m, '#')
+		if idx < 0 {
+			return m
+		}
+		return m[:idx] + wrapNoTranslate(m[idx:])
+	})
+	html = properNounRe.ReplaceAllStringFunc(html, wrapNoTranslate)
+	return html
+}
 
 // prepBodyForTranslation produces (textToTranslate, restoreFn). Pipeline:
 //
@@ -53,30 +119,110 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 		}
 	}
 
+	// Pull HTML comments out FIRST — they hide our thumbnail URL and
+	// shouldn't be exposed to Azure at all. Restored unchanged on the
+	// other side so the thumbnail metadata survives the round-trip.
+	comments := make([]string, 0)
+	htmlBody = htmlCommentRe.ReplaceAllStringFunc(htmlBody, func(c string) string {
+		i := len(comments)
+		comments = append(comments, c)
+		return `<span translate="no" class="isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
+	})
+
 	// Pull <img> tags out and replace with placeholders.
 	imgs := make([]string, 0)
-	withPlaceholders := imgTagRe.ReplaceAllStringFunc(htmlBody, func(tag string) string {
+	htmlBody = imgTagRe.ReplaceAllStringFunc(htmlBody, func(tag string) string {
 		i := len(imgs)
 		imgs = append(imgs, tag)
-		return imgPlaceholderPrefix + fmt.Sprint(i) + imgPlaceholderSuffix
+		return imgPlaceholder(i)
 	})
+
+	// Now wrap everything else that mustn't be translated — URLs,
+	// emails, hashtags, brand/place names. Done AFTER <img> + comment
+	// extraction so we don't wrap URLs inside their attributes.
+	withPlaceholders := protectInlineTokens(htmlBody)
 
 	restore := func(translated string) string {
 		out := translated
+
+		// ----- Restore <img> tags -----
 		for i, tag := range imgs {
-			token := imgPlaceholderPrefix + fmt.Sprint(i) + imgPlaceholderSuffix
-			out = strings.Replace(out, token, tag, 1)
-			// Azure sometimes capitalizes or spaces the token — try a
-			// loose match as a fallback.
-			altToken := strings.ReplaceAll(token, " ", "")
-			if out == translated && altToken != token {
-				out = strings.Replace(out, altToken, tag, 1)
+			tok := imgPlaceholder(i)
+			if strings.Contains(out, tok) {
+				out = strings.Replace(out, tok, tag, 1)
+				continue
+			}
+			// Tolerance for Azure HTML-mode quirks (attribute reorder,
+			// extra whitespace, quote-style changes).
+			loose := regexp.MustCompile(
+				`<span\b[^>]*class=["']?isf-img-tok["']?[^>]*>` +
+					regexp.QuoteMeta(fmt.Sprint(i)) +
+					`</span>`)
+			if loc := loose.FindStringIndex(out); loc != nil {
+				out = out[:loc[0]] + tag + out[loc[1]:]
+				continue
+			}
+			// Legacy: rows translated under the old ¦¦IMG{n}¦¦ scheme.
+			legacy := regexp.MustCompile(
+				`¦¦\s*(IMG|आईएमजी|आइएमजी|إيمج|آی\s*ام\s*جی|IMAGEN|IMAGEM)\s*` +
+					fmt.Sprint(i) +
+					`\s*¦¦`)
+			if loc := legacy.FindStringIndex(out); loc != nil {
+				out = out[:loc[0]] + tag + out[loc[1]:]
+				continue
+			}
+			// We tried — log loudly so production catches translator
+			// regressions instead of silently shipping broken pages.
+			log.Printf("articles: WARN unmatched img placeholder %d in translated body (img stayed missing)", i)
+		}
+
+		// ----- Restore HTML comments -----
+		for i, c := range comments {
+			tok := `<span translate="no" class="isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
+			if strings.Contains(out, tok) {
+				out = strings.Replace(out, tok, c, 1)
+				continue
+			}
+			loose := regexp.MustCompile(
+				`<span\b[^>]*class=["']?isf-cmt-tok["']?[^>]*>` +
+					regexp.QuoteMeta(fmt.Sprint(i)) +
+					`</span>`)
+			if loc := loose.FindStringIndex(out); loc != nil {
+				out = out[:loc[0]] + c + out[loc[1]:]
 			}
 		}
+
+		// ----- Strip the translate="no" wrappers we added around
+		//       URLs / emails / hashtags / proper nouns. Those served
+		//       only to protect the inner text during translation — the
+		//       reader doesn't need an extra <span>.
+		out = stripNoTranslateWrappers(out)
+
 		return out
 	}
 
 	return withPlaceholders, restore
+}
+
+// stripNoTranslateWrappers removes the bare <span translate="no">…</span>
+// wrappers we added around URLs/emails/etc, leaving the inner text in
+// place. It does NOT touch the typed tokens (isf-img-tok / isf-cmt-tok)
+// — those are removed during the dedicated img/comment restore loops.
+var noTransWrapperRe = regexp.MustCompile(
+	`<span translate=["']no["'](?:\s+class=["'][^"']*["'])?>([^<]*)</span>`)
+
+func stripNoTranslateWrappers(s string) string {
+	return noTransWrapperRe.ReplaceAllStringFunc(s, func(m string) string {
+		// Skip our typed tokens — they're handled separately.
+		if strings.Contains(m, "isf-img-tok") || strings.Contains(m, "isf-cmt-tok") {
+			return m
+		}
+		sub := noTransWrapperRe.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return m
+		}
+		return sub[1]
+	})
 }
 
 type Repository interface {
@@ -98,7 +244,7 @@ type Service struct {
 }
 
 type Translator interface {
-	Translate(ctx context.Context, texts []string, targetLang string) ([]string, error)
+	Translate(ctx context.Context, texts []string, sourceLang, targetLang string) ([]string, error)
 }
 
 func NewService(repo Repository, c cache.Cache, t Translator) *Service {
@@ -153,22 +299,56 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 	if errors.Is(terr, ErrNotFound) {
 		// Pipeline:
 		//   1. Render markdown→HTML if needed
-		//   2. Replace <img> tags with inert placeholders
-		//   3. Translate
-		//   4. Splice the original <img> tags back
+		//   2. Strip HTML comments + replace <img> with inert placeholders
+		//   3. Wrap URLs / emails / hashtags / proper-nouns in translate="no"
+		//   4. Hand to Azure with explicit `from=<source>` + `textType=html`
+		//   5. On the way back: validate placeholders matched, restore
+		//      <img> + comments, strip the translate="no" wrappers
+		//   6. If validation fails, log and serve source — never cache a
+		//      broken translation in the DB
 		bodyForTranslate, restoreImages := prepBodyForTranslation(original.BodyMD)
-		translated, terr := s.translator.Translate(ctx, []string{original.Title, bodyForTranslate}, lang)
+
+		// Title is plain text — wrap any proper nouns in it too so
+		// "ISF SMILE" stays "ISF SMILE" not "ISF SORRIR" etc.
+		titleForTranslate := protectInlineTokens(original.Title)
+
+		sourceLang := original.SourceLang
+		if sourceLang == "" {
+			sourceLang = "en"
+		}
+
+		translated, terr := s.translator.Translate(
+			ctx, []string{titleForTranslate, bodyForTranslate}, sourceLang, lang)
 		if terr != nil {
-			// Don't 500 the reader — log the underlying Azure error and
-			// gracefully serve the source-language article instead. Lang
-			// dropdowns flip the user back to that view; better than a
-			// broken page. We also DON'T cache this in
-			// article_translations so the next request will retry.
+			// Don't 500 the reader — log + gracefully serve source.
 			log.Printf("articles: TRANSLATE FAILED for %s/%s, serving source: %v", slug, lang, terr)
 			return original, nil
 		}
-		title = translated[0]
+		if len(translated) != 2 {
+			log.Printf("articles: TRANSLATE returned %d items for %s/%s, expected 2; serving source",
+				len(translated), slug, lang)
+			return original, nil
+		}
+
+		rawTitle := stripNoTranslateWrappers(translated[0])
+		title = rawTitle
 		body = restoreImages(translated[1])
+
+		// Sanity checks — refuse to cache an obviously broken translation.
+		if strings.Contains(body, `class="isf-img-tok"`) ||
+			strings.Contains(body, "¦¦IMG") ||
+			strings.Contains(body, `class="isf-cmt-tok"`) {
+			log.Printf("articles: WARN translated body for %s/%s still contains placeholders, NOT caching",
+				slug, lang)
+			localized := *original
+			localized.Title = title
+			localized.BodyMD = body
+			return &localized, nil
+		}
+		if title == "" {
+			log.Printf("articles: WARN empty title for %s/%s, serving source", slug, lang)
+			return original, nil
+		}
 
 		log.Printf("articles: translated %s → %s (title=%dB, body=%dB), saving",
 			slug, lang, len(title), len(body))
