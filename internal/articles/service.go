@@ -472,11 +472,25 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 
 		log.Printf("articles: translated %s → %s (title=%dB, body=%dB), saving",
 			slug, lang, len(title), len(body))
-		if serr := s.repo.SaveTranslation(ctx, original.ID, lang, title, body); serr != nil {
-			// Don't return — translation is in hand, still serve the
-			// reader. But log loudly so we notice persistent DB issues.
-			log.Printf("articles: SAVE TRANSLATION FAILED for %s/%s: %v", slug, lang, serr)
-		}
+		// CRITICAL: use a detached context for the save. The request
+		// context (`ctx`) is cancelled the moment the reader closes
+		// their tab or navigates away. If a cold translation took 10s
+		// and the reader bounced at 8s, ctx.Done() fires and
+		// SaveTranslation gets cancelled mid-INSERT — the work is
+		// thrown away and the NEXT reader pays the same 10s again.
+		// This was the leading cause of "translations sometimes don't
+		// save". We give the DB write its own 10-second budget,
+		// independent of whether the original requester is still
+		// listening.
+		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func(articleID uuid.UUID, lang, title, body string) {
+			defer cancel()
+			if serr := s.repo.SaveTranslation(saveCtx, articleID, lang, title, body); serr != nil {
+				log.Printf("articles: SAVE TRANSLATION FAILED for %s/%s: %v", slug, lang, serr)
+				return
+			}
+			log.Printf("articles: saved translation %s/%s to DB", slug, lang)
+		}(original.ID, lang, title, body)
 	}
 
 	localized := *original
