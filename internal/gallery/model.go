@@ -52,10 +52,6 @@ type Tag struct {
 }
 
 type CreateTagRequest struct {
-<<<<<<< HEAD
-	Name     string `json:"name" binding:"required,min=1,max=50"`
-=======
 	Name     string `json:"name" binding:"required,min=1,max=120"`
->>>>>>> 3e4e8d0 (contact API: migrations)
 	Position int    `json:"position"`
 }
