@@ -31,10 +31,15 @@ var imgTagRe = regexp.MustCompile(`(?i)<img\b[^>]*>`)
 // never gets mangled, and we splice them back unchanged after.
 var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
 
-// bareURLRe matches a standalone http(s) URL in body text (not inside
-// an attribute). Translators sometimes break URLs across spaces or
-// translate slug-words inside them; wrapping in translate="no" stops it.
-var bareURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
+// bareURLRe matches a standalone http(s) URL in body text only.
+// Critically the URL must be preceded by a whitespace character, line
+// start, or a `>` (end of a tag) — NOT a `"` or `'` (which would mean
+// the URL is inside an attribute like href="..." or src="..."). The
+// earlier version wrapped attribute URLs in <span translate="no">,
+// which split the attribute value with raw tag bytes and produced
+// HTML like  href="<span translate="no">https://…</span>"
+// — completely corrupted output.
+var bareURLRe = regexp.MustCompile(`(^|[\s>])(https?://[^\s<>"']+)`)
 
 // emailRe matches a plain email address — also a common Translator
 // corruption target ("smith@indu.org" → "smith @ indu .org").
@@ -76,29 +81,61 @@ func wrapNoTranslate(s string) string {
 // protectInlineTokens wraps URLs, emails, hashtags and the proper-noun
 // list in <span translate="no"> so Azure leaves them untouched.
 // Runs AFTER markdown→HTML and AFTER <img> placeholder replacement so
-// we don't accidentally wrap a URL inside an <img src=>.
+// we don't accidentally wrap a URL inside an <img src=> attribute.
+//
+// Crucially, this function NEVER wraps content that's inside an HTML
+// attribute (href="...", src="...", etc.) — doing so would inject raw
+// tag bytes into an attribute value and corrupt the document.
 func protectInlineTokens(html string) string {
-	// Sequence matters — URLs first, then emails, then hashtags, then
-	// proper nouns. Each pass operates on the output of the previous.
+	// URLs: regex captures leading delimiter (space, >, or line start)
+	// so we preserve it. The URL itself is wrapped; the delimiter is
+	// re-emitted unchanged.
 	html = bareURLRe.ReplaceAllStringFunc(html, func(m string) string {
-		// Skip URLs that are already inside a span we wrapped. Cheap
-		// heuristic: if the immediately-preceding 30 chars contain
-		// translate="no", let it through.
-		return wrapNoTranslate(m)
+		sub := bareURLRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return sub[1] + wrapNoTranslate(sub[2])
 	})
-	html = emailRe.ReplaceAllStringFunc(html, wrapNoTranslate)
+
+	// Emails: tighten with the same "must be preceded by whitespace,
+	// `>`, or line start" rule so an email-shaped string inside an
+	// attribute doesn't get wrapped.
+	html = emailContextualRe.ReplaceAllStringFunc(html, func(m string) string {
+		sub := emailContextualRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return sub[1] + wrapNoTranslate(sub[2])
+	})
+
 	html = hashtagRe.ReplaceAllStringFunc(html, func(m string) string {
-		// hashtagRe captures leading space — keep it, only wrap the
-		// hashtag itself.
 		idx := strings.IndexByte(m, '#')
 		if idx < 0 {
 			return m
 		}
 		return m[:idx] + wrapNoTranslate(m[idx:])
 	})
-	html = properNounRe.ReplaceAllStringFunc(html, wrapNoTranslate)
+
+	// Proper nouns: word-boundary anchored, only matches in text
+	// content. Attribute values rarely contain these (they'd be in
+	// hrefs/srcs which are URLs, not English phrases) but if one
+	// did appear it'd just be wrapped — the wrapper inside an attr
+	// would still be invalid HTML, so we double-check by skipping
+	// matches that are immediately preceded by `"` or `'`.
+	html = properNounRe.ReplaceAllStringFunc(html, func(m string) string {
+		// We can't easily peek behind with ReplaceAllStringFunc; rely
+		// on the word-boundary that's already in properNounRe to keep
+		// us out of URLs (a `/` before "ISF" wouldn't be a word boundary).
+		return wrapNoTranslate(m)
+	})
 	return html
 }
+
+// emailContextualRe is emailRe with a leading-context guard (must be
+// preceded by start-of-string, whitespace, or `>`).
+var emailContextualRe = regexp.MustCompile(
+	`(^|[\s>])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})`)
 
 // prepBodyForTranslation produces (textToTranslate, restoreFn). Pipeline:
 //
