@@ -43,3 +43,18 @@ type UpdateItemRequest struct {
 	Position  *int      `json:"position,omitempty"`
 	Published *bool     `json:"published,omitempty"`
 }
+
+// Tag is one entry in the admin-curated gallery_tags list. The Name is
+// what appears on the public page and what's stored in the per-image
+// Item.Tags array.
+type Tag struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Position  int       `json:"position"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CreateTagRequest struct {
+	Name     string `json:"name" binding:"required,min=1,max=50"`
+	Position int    `json:"position"`
+}
