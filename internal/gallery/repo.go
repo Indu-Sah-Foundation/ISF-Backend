@@ -125,3 +125,45 @@ func (r *Repo) Delete(ctx context.Context, id uuid.UUID) (string, error) {
 	}
 	return src, nil
 }
+
+// ---------------------------------------------------------------------------
+// Tag CRUD — admin-curated tag names that drive the image-tagging UI.
+// ---------------------------------------------------------------------------
+
+func (r *Repo) ListTags(ctx context.Context) ([]Tag, error) {
+	const q = `SELECT id, name, position, created_at FROM gallery_tags ORDER BY position ASC, name ASC`
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list gallery tags: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Tag, 0)
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.ID, &t.Name, &t.Position, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan gallery tag: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repo) CreateTag(ctx context.Context, req CreateTagRequest) (*Tag, error) {
+	const q = `INSERT INTO gallery_tags (name, position) VALUES ($1, $2) RETURNING id, name, position, created_at`
+	var t Tag
+	if err := r.pool.QueryRow(ctx, q, req.Name, req.Position).Scan(&t.ID, &t.Name, &t.Position, &t.CreatedAt); err != nil {
+		return nil, fmt.Errorf("create gallery tag: %w", err)
+	}
+	return &t, nil
+}
+
+func (r *Repo) DeleteTag(ctx context.Context, id uuid.UUID) error {
+	res, err := r.pool.Exec(ctx, `DELETE FROM gallery_tags WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete gallery tag: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

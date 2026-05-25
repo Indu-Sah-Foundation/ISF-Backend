@@ -12,6 +12,10 @@ type Repository interface {
 	AllSrcs(ctx context.Context) ([]string, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateItemRequest) (*Item, error)
 	Delete(ctx context.Context, id uuid.UUID) (string, error)
+
+	ListTags(ctx context.Context) ([]Tag, error)
+	CreateTag(ctx context.Context, req CreateTagRequest) (*Tag, error)
+	DeleteTag(ctx context.Context, id uuid.UUID) error
 }
 
 // BlobDeleter is the interface the storage module satisfies — when an
@@ -44,6 +48,18 @@ func (s *Service) AllSrcs(ctx context.Context) ([]string, error) {
 
 func (s *Service) Update(ctx context.Context, id uuid.UUID, req UpdateItemRequest) (*Item, error) {
 	return s.repo.Update(ctx, id, req)
+}
+
+func (s *Service) ListTags(ctx context.Context) ([]Tag, error) {
+	return s.repo.ListTags(ctx)
+}
+
+func (s *Service) CreateTag(ctx context.Context, req CreateTagRequest) (*Tag, error) {
+	return s.repo.CreateTag(ctx, req)
+}
+
+func (s *Service) DeleteTag(ctx context.Context, id uuid.UUID) error {
+	return s.repo.DeleteTag(ctx, id)
 }
 
 // Delete removes the row AND deletes the underlying blob (best-effort —
