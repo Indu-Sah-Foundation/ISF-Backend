@@ -22,7 +22,11 @@ import (
 
 var mdRenderer = goldmark.New(goldmark.WithRendererOptions(html.WithUnsafe()))
 
-var htmlBodyRe = regexp.MustCompile(`(?i)^\s*<(p|h[1-6]|div|ul|ol|blockquote|figure|span|strong|em|img|article|section)\b`)
+// htmlBodyRe — does the body look like HTML so we can skip markdown
+// rendering? Also matches a leading HTML comment (e.g. our thumbnail
+// marker `<!-- thumbnail: ... -->`) so bodies that start with one
+// don't get pushed through goldmark unnecessarily.
+var htmlBodyRe = regexp.MustCompile(`(?i)^\s*(<!--|<(p|h[1-6]|div|ul|ol|blockquote|figure|span|strong|em|img|article|section)\b)`)
 
 // imgTagRe matches a full <img …> tag (self-closing or not).
 var imgTagRe = regexp.MustCompile(`(?i)<img\b[^>]*>`)
@@ -61,16 +65,31 @@ var numberRe = regexp.MustCompile(`(^|[\s>(\[])([0-9]+(?:[.,][0-9]+)*)\b`)
 // verbatim in every language. Add to this list as needed.
 var properNounRe = regexp.MustCompile(
 	`\b(` +
-		`Indu Sah Foundation|ISF SMILE|ISF Robotics|ISF|` +
+		// Foundation + programs
+		`Indu Sah Foundation|ISF SMILE|ISF Robotics|ISFVolunteers|ISF|` +
+		// Robotics partner orgs / programs
 		`FIRST Lego League|FIRST LEGO League|FIRST Tech Challenge|FLL|FTC|` +
-		`Mahottari|Loharpatti|Janakpurdham|Janakpur|Mithila|Madhepura|` +
+		// Places (towns, districts, schools)
+		`Mahottari|Loharpatti|Janakpurdham|Janakpur|Mithila|Madhepura|Rajbiraj|` +
+		`Shiva International Secondary School|Angels School|` +
+		// Founders + leadership
 		`Lal Sah|Dr\. Vijay Sah|Vijay Sah|Shubham Sah|` +
-		`Rotary Club of Waukee|Rotary International|` +
-		`NepalMed|Humble Smile Foundation|Global Oral Health Foundation Society` +
+		// Field staff / volunteers / collaborators named in articles
+		`Dr\. Sneha Mahato|Sneha Mahato|Anita Kumari|Mahesh|Rupesh|Santosh|Pappu|Nitesh|Nikhil|Neha|` +
+		// Advisory board
+		`Dr\. Amit Saini|Dr\. Arne Drews|Dr\. Darren Weiss|Dr\. Stephen Forrest|Dr\. Pravin Shah|` +
+		// Partner organizations
+		`Rotary Club of Waukee|Rotary International|NepalMed|Humble Smile Foundation|Global Oral Health Foundation Society` +
 		`)\b`)
 
+// Azure Translator officially documents `class="notranslate"` as the
+// reliable signal to leave content alone. The previously-used
+// `translate="no"` is the W3C standard but Azure strips the wrapper
+// entirely in many cases (leaving the inner text exposed and unable
+// to be matched by the restore loop). `notranslate` is honored AND the
+// wrapper survives the round-trip.
 const (
-	imgPlaceholderOpen  = `<span translate="no" class="isf-img-tok">`
+	imgPlaceholderOpen  = `<span class="notranslate isf-img-tok">`
 	imgPlaceholderClose = `</span>`
 )
 
@@ -78,12 +97,11 @@ func imgPlaceholder(i int) string {
 	return imgPlaceholderOpen + fmt.Sprint(i) + imgPlaceholderClose
 }
 
-// wrapNoTranslate wraps a chunk in <span translate="no"> if it isn't
-// already inside one. Skip when the surrounding context already has a
-// translate="no" ancestor to avoid double-wrapping that some translators
-// gag on.
+// wrapNoTranslate wraps a chunk in <span class="notranslate"> — Azure's
+// documented marker for content to skip. More reliable than
+// translate="no" which Azure inconsistently strips.
 func wrapNoTranslate(s string) string {
-	return `<span translate="no">` + s + `</span>`
+	return `<span class="notranslate">` + s + `</span>`
 }
 
 // protectInlineTokens wraps URLs, emails, hashtags and the proper-noun
@@ -174,14 +192,23 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 		}
 	}
 
-	// Pull HTML comments out FIRST — they hide our thumbnail URL and
+	// FIRST: wrap URLs / emails / hashtags / proper-nouns / numbers
+	// in <span class="notranslate"> *while we still have the original
+	// HTML* (anchors, paragraph text — but not yet our own placeholder
+	// spans). This avoids the bug where numberRe would otherwise match
+	// the digit content of our img/comment placeholder spans (e.g.
+	// `<span class="notranslate isf-img-tok">0</span>`) and try to
+	// double-wrap them.
+	htmlBody = protectInlineTokens(htmlBody)
+
+	// THEN: pull HTML comments out — they hide our thumbnail URL and
 	// shouldn't be exposed to Azure at all. Restored unchanged on the
 	// other side so the thumbnail metadata survives the round-trip.
 	comments := make([]string, 0)
 	htmlBody = htmlCommentRe.ReplaceAllStringFunc(htmlBody, func(c string) string {
 		i := len(comments)
 		comments = append(comments, c)
-		return `<span translate="no" class="isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
+		return `<span class="notranslate isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
 	})
 
 	// Pull <img> tags out and replace with placeholders.
@@ -192,10 +219,9 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 		return imgPlaceholder(i)
 	})
 
-	// Now wrap everything else that mustn't be translated — URLs,
-	// emails, hashtags, brand/place names. Done AFTER <img> + comment
-	// extraction so we don't wrap URLs inside their attributes.
-	withPlaceholders := protectInlineTokens(htmlBody)
+	// protectInlineTokens already ran above (before placeholder
+	// extraction) — no need to re-run here.
+	withPlaceholders := htmlBody
 
 	restore := func(translated string) string {
 		out := translated
@@ -225,7 +251,7 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 
 		// ----- Restore HTML comments -----
 		for i, c := range comments {
-			tok := `<span translate="no" class="isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
+			tok := `<span class="notranslate isf-cmt-tok">` + fmt.Sprint(i) + `</span>`
 			if strings.Contains(out, tok) {
 				out = strings.Replace(out, tok, c, 1)
 				continue
@@ -253,12 +279,14 @@ func prepBodyForTranslation(body string) (string, func(string) string) {
 	return withPlaceholders, restore
 }
 
-// stripNoTranslateWrappers removes the bare <span translate="no">…</span>
+// stripNoTranslateWrappers removes the bare <span class="notranslate">…</span>
 // wrappers we added around URLs/emails/etc, leaving the inner text in
 // place. It does NOT touch the typed tokens (isf-img-tok / isf-cmt-tok)
 // — those are removed during the dedicated img/comment restore loops.
+// Also strips legacy `translate="no"` wrappers from any rows still
+// holding them, for cleanup convenience.
 var noTransWrapperRe = regexp.MustCompile(
-	`<span translate=["']no["'](?:\s+class=["'][^"']*["'])?>([^<]*)</span>`)
+	`<span (?:class=["']notranslate["']|translate=["']no["'])(?:\s+(?:class|translate)=["'][^"']*["'])?>([^<]*)</span>`)
 
 func stripNoTranslateWrappers(s string) string {
 	return noTransWrapperRe.ReplaceAllStringFunc(s, func(m string) string {
@@ -405,6 +433,20 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 		if title == "" {
 			log.Printf("articles: WARN empty title for %s/%s, serving source", slug, lang)
 			return original, nil
+		}
+		// IMAGE-COUNT GATE — the critical one.
+		// If Azure strips our placeholder wrappers entirely (it does this
+		// sometimes for `<span class="notranslate">` despite the docs),
+		// the typed-token check above WON'T trip because there's no class
+		// left to find — only the raw digit. So we count actual <img>
+		// tags in the original vs the restored body. Mismatch = some
+		// images failed to restore, body is broken, do NOT cache.
+		srcImgCount := len(imgTagRe.FindAllString(original.BodyMD, -1))
+		dstImgCount := len(imgTagRe.FindAllString(body, -1))
+		if srcImgCount != dstImgCount {
+			return fail(fmt.Sprintf(
+				"image count mismatch (source has %d <img>, translation has %d) — Azure likely stripped placeholder wrappers",
+				srcImgCount, dstImgCount))
 		}
 		// Length sanity: catch the case where Azure returns a stub
 		// (truncation, silent failure, content-policy block) instead
