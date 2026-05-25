@@ -15,6 +15,7 @@ import (
 	"isf-backend/internal/cache"
 	"isf-backend/internal/cleanup"
 	"isf-backend/internal/config"
+	"isf-backend/internal/contacts"
 	"isf-backend/internal/db"
 	"isf-backend/internal/gallery"
 	"isf-backend/internal/health"
@@ -103,6 +104,8 @@ func main() {
 
 	healthHandler := health.NewHandler(pool, redisCache)
 
+	contactsHandler := contacts.NewHandler(contacts.NewService(contacts.NewRepo(pool)))
+
 	// Image uploads + blob lifecycle (admin only). Storage client is also
 	// shared with the gallery service (for blob-delete on row-delete) and
 	// the cleanup module (for orphan scan + remove).
@@ -134,8 +137,10 @@ func main() {
 	// 5. Rate limiters
 	//    /auth/login: 5 attempts/min per IP -> brute-force defense
 	//    /donations/checkout: 30/min per IP -> bot/spam defense
+	//    /contacts: 5/min per IP -> spam-bot defense on the public form
 	loginLimiter := middleware.NewIPRateLimiter(rate.Every(12*time.Second), 5).Middleware()
 	checkoutLimiter := middleware.NewIPRateLimiter(rate.Every(2*time.Second), 30).Middleware()
+	contactLimiter := middleware.NewIPRateLimiter(rate.Every(12*time.Second), 5).Middleware()
 
 	// 6. Router
 	r := gin.New()
@@ -151,6 +156,7 @@ func main() {
 	volunteersHandler.RegisterRoutes(r, adminMW...)
 	teamHandler.RegisterRoutes(r, adminMW...)
 	galleryHandler.RegisterRoutes(r, adminMW...)
+	contactsHandler.RegisterRoutes(r, contactLimiter, adminMW...)
 	translateHandler.RegisterRoutes(r)
 	if storageHandler != nil {
 		storageHandler.RegisterRoutes(r, adminMW...)
