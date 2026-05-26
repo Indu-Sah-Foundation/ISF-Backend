@@ -67,8 +67,8 @@ func Load() (*Config, error) {
 		AdminPassword:       os.Getenv("ADMIN_PASSWORD"),
 		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
-		DonationSuccessURL:  getEnvOr("DONATION_SUCCESS_URL", "http://localhost:3000/donate/thanks"),
-		DonationCancelURL:   getEnvOr("DONATION_CANCEL_URL", "http://localhost:3000/donate"),
+		DonationSuccessURL:  getEnvOr("DONATION_SUCCESS_URL", "https://www.indusahfoundation.org/donate/thanks"),
+		DonationCancelURL:   getEnvOr("DONATION_CANCEL_URL", "https://www.indusahfoundation.org/donate"),
 
 		StorageConnectionString: os.Getenv("AZURE_STORAGE_CONNECTION_STRING"),
 		ImagesContainer:         getEnvOr("IMAGES_CONTAINER", "images"),
