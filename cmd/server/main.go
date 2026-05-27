@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -147,11 +148,16 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(requestLogger()) // structured access log -> stdout -> App Insights ingestion
 
-	r.Use(auth.RequireAPIKey(cfg.APIKey, []string{
+	apiKeyMW := auth.RequireAPIKey(cfg.APIKey, []string{
 		"/health",
 		"/ready",
 		"/donations/webhook",
-	}))
+	})
+	r.Use(apiKeyMW)
+
+	r.NoRoute(apiKeyMW, func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	})
 
 	healthHandler.RegisterRoutes(r)
 	authHandler.RegisterRoutes(r, loginLimiter)

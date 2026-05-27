@@ -7,3 +7,4 @@
 # Azure credentials
 azure-config.txt
 azure-go-config.txttest-api.sh
+.DS_Store
