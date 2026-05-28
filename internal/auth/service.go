@@ -13,6 +13,7 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 type Repository interface {
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	Create(ctx context.Context, email, passwordHash, role string) (*User, error)
+	UpdatePassword(ctx context.Context, email, passwordHash string) error
 }
 
 type Service struct {
@@ -43,19 +44,27 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, *U
 }
 
 func (s *Service) EnsureAdmin(ctx context.Context, email, password string) error {
-	existing, err := s.repo.GetByEmail(ctx, email)
-	if err == nil && existing != nil {
-		return nil
-	}
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	if _, err := s.repo.Create(ctx, email, string(hash), "admin"); err != nil {
-		return fmt.Errorf("create admin: %w", err)
+
+	existing, err := s.repo.GetByEmail(ctx, email)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if existing == nil {
+		if _, err := s.repo.Create(ctx, email, string(hash), "admin"); err != nil {
+			return fmt.Errorf("create admin: %w", err)
+		}
+		return nil
+	}
+
+	if bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(password)) == nil {
+		return nil
+	}
+	if err := s.repo.UpdatePassword(ctx, email, string(hash)); err != nil {
+		return fmt.Errorf("update admin password: %w", err)
 	}
 	return nil
 }
