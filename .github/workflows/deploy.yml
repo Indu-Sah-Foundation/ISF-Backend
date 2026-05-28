@@ -99,13 +99,6 @@ jobs:
             --resource-group ${{ steps.get_acr.outputs.resource_group }} \
             --docker-custom-image-name ${ACR_LOGIN_SERVER}/go-backend:${{ github.sha }}
       
-      - name: Set Dynamic App Settings (Secrets)
-        run: |
-          az webapp config appsettings set \
-            --name ${{ env.APP_NAME }}-go-backend \
-            --resource-group ${{ steps.get_acr.outputs.resource_group }} \
-            --settings MONGODB_URI="${{ secrets.MONGODB_URI }}"
-      
       - name: Restart Web App
         run: |
           az webapp restart \
