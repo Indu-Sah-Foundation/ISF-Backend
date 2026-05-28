@@ -47,6 +47,15 @@ func (r *Repo) Create(ctx context.Context, email, passwordHash, role string) (*U
 	return &u, nil
 }
 
+func (r *Repo) UpdatePassword(ctx context.Context, email, passwordHash string) error {
+	const q = `UPDATE users SET password_hash = $1 WHERE email = $2`
+	_, err := r.pool.Exec(ctx, q, passwordHash, email)
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	return nil
+}
+
 func (r *Repo) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	const q = `SELECT id, email, password_hash, role, created_at FROM users WHERE id = $1`
 	var u User
