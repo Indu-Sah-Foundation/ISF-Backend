@@ -2,12 +2,39 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 
 	"isf-backend/internal/httperr"
 )
+
+func prettyValidationError(err error) string {
+	var ve validator.ValidationErrors
+	if !errors.As(err, &ve) {
+		return "invalid request body"
+	}
+	msgs := make([]string, 0, len(ve))
+	for _, fe := range ve {
+		field := strings.ToLower(fe.Field())
+		switch fe.Tag() {
+		case "required":
+			msgs = append(msgs, field+" is required")
+		case "email":
+			msgs = append(msgs, field+" must be a valid email")
+		case "min":
+			msgs = append(msgs, fmt.Sprintf("%s must be at least %s characters", field, fe.Param()))
+		case "max":
+			msgs = append(msgs, fmt.Sprintf("%s must be at most %s characters", field, fe.Param()))
+		default:
+			msgs = append(msgs, fmt.Sprintf("%s is invalid", field))
+		}
+	}
+	return strings.Join(msgs, "; ")
+}
 
 type Handler struct {
 	svc *Service
@@ -30,7 +57,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, loginLimiter gin.HandlerFunc) {
 func (h *Handler) login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httperr.BadRequest(c, err.Error())
+		httperr.BadRequest(c, prettyValidationError(err))
 		return
 	}
 	token, user, err := h.svc.Login(c.Request.Context(), req.Email, req.Password)
