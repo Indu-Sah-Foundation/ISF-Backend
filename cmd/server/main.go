@@ -20,6 +20,7 @@ import (
 	"isf-backend/internal/db"
 	"isf-backend/internal/gallery"
 	"isf-backend/internal/health"
+	"isf-backend/internal/maintenance"
 	"isf-backend/internal/middleware"
 	"isf-backend/internal/payments"
 	"isf-backend/internal/people"
@@ -107,6 +108,21 @@ func main() {
 
 	contactsHandler := contacts.NewHandler(contacts.NewService(contacts.NewRepo(pool)))
 
+	// Maintenance → GitHub issues (admin only). Optional: only wired when a
+	// GitHub PAT is configured, so the backend still boots without it.
+	var maintenanceHandler *maintenance.Handler
+	if cfg.GitHubToken != "" {
+		gh := maintenance.NewGitHubClient(cfg.GitHubToken, cfg.GitHubOrg)
+		maintenanceSvc := maintenance.NewService(gh, maintenance.Repos{
+			Frontend: cfg.GitHubRepoFE,
+			Backend:  cfg.GitHubRepoBE,
+			Infra:    cfg.GitHubRepoInfra,
+		})
+		maintenanceHandler = maintenance.NewHandler(maintenanceSvc)
+	} else {
+		log.Printf("warning: GITHUB_TOKEN not set, /admin/maintenance disabled")
+	}
+
 	// Image uploads + blob lifecycle (admin only). Storage client is also
 	// shared with the gallery service (for blob-delete on row-delete) and
 	// the cleanup module (for orphan scan + remove).
@@ -169,6 +185,9 @@ func main() {
 	teamHandler.RegisterRoutes(r, adminMW...)
 	galleryHandler.RegisterRoutes(r, adminMW...)
 	contactsHandler.RegisterRoutes(r, contactLimiter, adminMW...)
+	if maintenanceHandler != nil {
+		maintenanceHandler.RegisterRoutes(r, adminMW...)
+	}
 	translateHandler.RegisterRoutes(r)
 	if storageHandler != nil {
 		storageHandler.RegisterRoutes(r, adminMW...)

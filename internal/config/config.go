@@ -44,6 +44,12 @@ type Config struct {
 	ImagesContainer         string
 
 	APIKey string
+
+	GitHubToken     string
+	GitHubOrg       string
+	GitHubRepoFE    string
+	GitHubRepoBE    string
+	GitHubRepoInfra string
 }
 
 // Load reads environment variables and returns a populated *Config.
@@ -74,6 +80,12 @@ func Load() (*Config, error) {
 		ImagesContainer:         getEnvOr("IMAGES_CONTAINER", "images"),
 
 		APIKey: os.Getenv("API_KEY"),
+
+		GitHubToken:     os.Getenv("GITHUB_TOKEN"),
+		GitHubOrg:       getEnvOr("GITHUB_ORG", "Indu-Sah-Foundation"),
+		GitHubRepoFE:    getEnvOr("GITHUB_REPO_FRONTEND", "ISF-Frontend"),
+		GitHubRepoBE:    getEnvOr("GITHUB_REPO_BACKEND", "ISF-Backend"),
+		GitHubRepoInfra: getEnvOr("GITHUB_REPO_INFRA", "ISF-Infastructure"),
 	}
 
 	// Validate required fields.
