@@ -20,7 +20,6 @@ type Donation struct {
 	Email                 *string   `json:"email"`
 	Name                  *string   `json:"name"`
 	Status                string    `json:"status"`
-	Livemode              bool      `json:"livemode"`
 	StripeSessionID       string    `json:"stripe_session_id"`
 	StripePaymentIntentID *string   `json:"stripe_payment_intent_id,omitempty"`
 	CreatedAt             time.Time `json:"created_at"`
