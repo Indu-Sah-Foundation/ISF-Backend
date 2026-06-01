@@ -141,6 +141,25 @@ func (f *fakeGitHub) CreateIssue(_ context.Context, repo, title, _ string, label
 	return &iss, nil
 }
 
+
+func (f *fakeGitHub) seedClosed(repo, title string, closedAt time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextNum++
+	ca := closedAt
+	f.created = append(f.created, fakeIssue{
+		repo:   repo,
+		labels: []string{maintenance.Label},
+		issue: maintenance.Issue{
+			Number:   f.nextNum,
+			HTMLURL:  "https://github.com/Indu-Sah-Foundation/" + repo + "/issues/" + strconv.Itoa(f.nextNum),
+			Title:    title,
+			State:    "closed",
+			ClosedAt: &ca,
+		},
+	})
+}
+
 func (f *fakeGitHub) ListIssues(_ context.Context, repos []string, label string, _ int) ([]maintenance.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -470,5 +489,43 @@ func TestMaintenanceListReturnsCreated(t *testing.T) {
 	_ = json.Unmarshal(body, &out)
 	if len(out.Items) != 2 {
 		t.Fatalf("expected 2 maintenance issues, got %d (body=%s)", len(out.Items), body)
+	}
+}
+
+func TestMaintenanceListHidesOldCompleted(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	if _, body := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token), map[string]string{"title": "Open request still in progress"}); body == nil {
+		t.Fatal("seed open failed")
+	}
+	testGitHub.seedClosed("ISF-Frontend", "Completed two days ago", time.Now().Add(-48*time.Hour))
+	testGitHub.seedClosed("ISF-Backend", "Completed an hour ago", time.Now().Add(-1*time.Hour))
+
+	resp, body := do(t, "GET", srv.URL+"/admin/maintenance", adminHeaders(token), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Items []struct {
+			Title string `json:"title"`
+			State string `json:"state"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(body, &out)
+
+	titles := map[string]bool{}
+	for _, it := range out.Items {
+		titles[it.Title] = true
+	}
+	if !titles["Open request still in progress"] {
+		t.Fatalf("open request should be listed; got %s", body)
+	}
+	if !titles["Completed an hour ago"] {
+		t.Fatalf("recently-completed request should still show; got %s", body)
+	}
+	if titles["Completed two days ago"] {
+		t.Fatalf("request completed >24h ago should be hidden; got %s", body)
 	}
 }
