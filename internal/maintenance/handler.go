@@ -15,8 +15,6 @@ type Handler struct {
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// RegisterRoutes mounts the admin-only maintenance endpoints. All routes sit
-// behind adminMW — only an authenticated admin can file or view requests.
 func (h *Handler) RegisterRoutes(r *gin.Engine, adminMW ...gin.HandlerFunc) {
 	g := r.Group("/admin/maintenance", adminMW...)
 	g.POST("", h.create)
