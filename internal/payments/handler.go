@@ -60,8 +60,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, checkoutLimiter, adminMW gin.Han
 	if adminMW != nil {
 		admin := g.Group("", adminMW)
 		admin.GET("", h.list)
+		admin.POST("/reconcile", h.reconcile)
 	} else {
 		g.GET("", h.list)
+		g.POST("/reconcile", h.reconcile)
 	}
 }
 
@@ -87,6 +89,17 @@ func (h *Handler) checkout(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+
+func (h *Handler) reconcile(c *gin.Context) {
+	livemodeOnly := c.DefaultQuery("livemode", "true") != "all"
+	updated, err := h.svc.Reconcile(c.Request.Context(), livemodeOnly)
+	if err != nil {
+		httperr.Respond(c, httperr.ErrInternal, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": updated})
+}
+
 func (h *Handler) webhook(c *gin.Context) {
 	payload, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -106,7 +119,8 @@ func (h *Handler) list(c *gin.Context) {
 	status := c.Query("status")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	out, err := h.svc.List(c.Request.Context(), status, limit, offset)
+	livemodeOnly := c.DefaultQuery("livemode", "true") != "all"
+	out, err := h.svc.List(c.Request.Context(), status, livemodeOnly, limit, offset)
 	if err != nil {
 		httperr.Respond(c, httperr.ErrInternal, err)
 		return
