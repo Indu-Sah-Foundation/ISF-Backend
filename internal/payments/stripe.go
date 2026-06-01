@@ -3,6 +3,7 @@ package payments
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/stripe/stripe-go/v78"
 	"github.com/stripe/stripe-go/v78/checkout/session"
@@ -13,6 +14,7 @@ type StripeClient struct {
 	successURL    string
 	cancelURL     string
 	webhookSecret string
+	livemode      bool
 }
 
 func NewStripeClient(secretKey, webhookSecret, successURL, cancelURL string) *StripeClient {
@@ -21,6 +23,7 @@ func NewStripeClient(secretKey, webhookSecret, successURL, cancelURL string) *St
 		successURL:    successURL,
 		cancelURL:     cancelURL,
 		webhookSecret: webhookSecret,
+		livemode: strings.HasPrefix(secretKey, "sk_live_"),
 	}
 }
 
@@ -56,4 +59,20 @@ func (s *StripeClient) CreateCheckoutSession(ctx context.Context, amountCents in
 
 func (s *StripeClient) VerifyWebhook(payload []byte, signatureHeader string) (stripe.Event, error) {
 	return webhook.ConstructEvent(payload, signatureHeader, s.webhookSecret)
+}
+
+func (s *StripeClient) Livemode() bool { return s.livemode }
+
+func (s *StripeClient) GetSession(ctx context.Context, sessionID string) (paymentStatus, paymentIntentID string, livemode bool, err error) {
+	params := &stripe.CheckoutSessionParams{}
+	params.Context = ctx
+	sess, err := session.Get(sessionID, params)
+	if err != nil {
+		return "", "", false, fmt.Errorf("stripe get session: %w", err)
+	}
+	var pi string
+	if sess.PaymentIntent != nil {
+		pi = sess.PaymentIntent.ID
+	}
+	return string(sess.PaymentStatus), pi, sess.Livemode, nil
 }
