@@ -1,7 +1,6 @@
 package maintenance
 
 import (
-	"regexp"
 	"strings"
 )
 
@@ -37,8 +36,6 @@ var (
 		"github actions", "workflow", "ci", "cd",
 	}
 )
-
-var wordRe = regexp.MustCompile(`[a-z0-9]+`)
 
 func Classify(title, description string) Target {
 	text := strings.ToLower(title + " " + description)
