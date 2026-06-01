@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"isf-backend/internal/contacts"
 	"isf-backend/internal/db"
 	"isf-backend/internal/health"
+	"isf-backend/internal/maintenance"
 	"isf-backend/internal/people"
 )
 
@@ -70,6 +73,9 @@ func newServer(t *testing.T) *httptest.Server {
 	// Per-test cache leakage is harmless because each test makes
 	// fresh writes and the test slug space is unique enough.)
 
+	// Fresh in-memory GitHub for each server so issue counts are deterministic.
+	testGitHub = &fakeGitHub{}
+
 	gin.SetMode(gin.TestMode)
 	authRepo := auth.NewRepo(pool)
 	authSvc := auth.NewService(authRepo, jwtSecret)
@@ -91,9 +97,73 @@ func newServer(t *testing.T) *httptest.Server {
 	articles.NewHandler(articles.NewService(articles.NewRepo(pool), rc, &fakeTranslator{})).RegisterRoutes(r, adminMW...)
 	contacts.NewHandler(contacts.NewService(contacts.NewRepo(pool))).RegisterRoutes(r, nil, adminMW...)
 
+	// Maintenance → GitHub, wired with an in-memory fake so the suite never
+	// touches the real GitHub API.
+	maintenance.NewHandler(
+		maintenance.NewService(testGitHub, maintenance.Repos{
+			Frontend: "ISF-Frontend",
+			Backend:  "ISF-Backend",
+			Infra:    "ISF-Infastructure",
+		}),
+	).RegisterRoutes(r, adminMW...)
+
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// testGitHub is an in-memory GitHub stand-in, reset per newServer() call.
+var testGitHub *fakeGitHub
+
+type fakeGitHub struct {
+	mu      sync.Mutex
+	created []fakeIssue
+	nextNum int
+}
+
+type fakeIssue struct {
+	repo   string
+	labels []string
+	issue  maintenance.Issue
+}
+
+func (f *fakeGitHub) CreateIssue(_ context.Context, repo, title, _ string, labels []string) (*maintenance.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextNum++
+	iss := maintenance.Issue{
+		Number:  f.nextNum,
+		HTMLURL: "https://github.com/Indu-Sah-Foundation/" + repo + "/issues/" + strconv.Itoa(f.nextNum),
+		Title:   title,
+		State:   "open",
+	}
+	f.created = append(f.created, fakeIssue{repo: repo, labels: labels, issue: iss})
+	return &iss, nil
+}
+
+func (f *fakeGitHub) ListIssues(_ context.Context, repos []string, label string, _ int) ([]maintenance.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]bool{}
+	for _, r := range repos {
+		want[r] = true
+	}
+	out := []maintenance.Issue{}
+	for _, c := range f.created {
+		if want[c.repo] && sliceContains(c.labels, label) {
+			out = append(out, c.issue)
+		}
+	}
+	return out, nil
+}
+
+func sliceContains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeTranslator struct{}
@@ -227,5 +297,178 @@ func TestContactsPublicSubmitWithAPIKey(t *testing.T) {
 	)
 	if resp.StatusCode != 201 {
 		t.Fatalf("contact submit failed: %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// ============================================================================
+// Maintenance → GitHub issues (admin only).
+// ============================================================================
+
+// loginAdmin returns a valid admin JWT for authenticated requests.
+func loginAdmin(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	resp, body := do(t, "POST", srv.URL+"/auth/login",
+		map[string]string{"X-API-Key": apiKey},
+		map[string]string{"email": adminEmail, "password": adminPassword},
+	)
+	if resp.StatusCode != 200 {
+		t.Fatalf("admin login failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.Token == "" {
+		t.Fatalf("no token in login response: %s", body)
+	}
+	return out.Token
+}
+
+func adminHeaders(token string) map[string]string {
+	return map[string]string{
+		"X-API-Key":     apiKey,
+		"Authorization": "Bearer " + token,
+	}
+}
+
+func TestMaintenanceRequiresAdmin(t *testing.T) {
+	srv := newServer(t)
+	// API key present, no JWT → 401.
+	resp, _ := do(t, "POST", srv.URL+"/admin/maintenance",
+		map[string]string{"X-API-Key": apiKey},
+		map[string]string{"title": "something broke"},
+	)
+	if resp.StatusCode != 401 {
+		t.Fatalf("maintenance create without admin JWT should 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestMaintenanceCreateRoutesFrontend(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	resp, body := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token),
+		map[string]string{
+			"title":       "The donate button is cut off on iPad",
+			"description": "The navbar overlaps the page header on mobile screens.",
+		},
+	)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Area string `json:"area"`
+		Repo string `json:"repo"`
+		Issue struct {
+			Number int `json:"number"`
+		} `json:"issue"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.Area != "frontend" {
+		t.Fatalf("expected frontend area, got %q (body=%s)", out.Area, body)
+	}
+	if out.Repo != "ISF-Frontend" {
+		t.Fatalf("expected ISF-Frontend repo, got %q", out.Repo)
+	}
+	if out.Issue.Number == 0 {
+		t.Fatalf("expected a real issue number, got 0")
+	}
+	// And the fake recorded it with the maintenance label.
+	if len(testGitHub.created) != 1 {
+		t.Fatalf("expected 1 issue created, got %d", len(testGitHub.created))
+	}
+	if !sliceContains(testGitHub.created[0].labels, maintenance.Label) {
+		t.Fatalf("issue missing %q label: %v", maintenance.Label, testGitHub.created[0].labels)
+	}
+}
+
+func TestMaintenanceCreateRoutesBackend(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+	resp, body := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token),
+		map[string]string{
+			"title":       "API returns 500 on the donations endpoint",
+			"description": "The postgres database query in the payments handler panics.",
+		},
+	)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Area string `json:"area"`
+		Repo string `json:"repo"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.Area != "backend" || out.Repo != "ISF-Backend" {
+		t.Fatalf("expected backend/ISF-Backend, got %q/%q (body=%s)", out.Area, out.Repo, body)
+	}
+}
+
+func TestMaintenanceCreateRoutesInfra(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+	resp, body := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token),
+		map[string]string{
+			"title":       "DNS not resolving after the Azure deploy",
+			"description": "The terraform apply changed the domain and the SSL certificate is failing.",
+		},
+	)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Area string `json:"area"`
+		Repo string `json:"repo"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.Area != "infra" || out.Repo != "ISF-Infastructure" {
+		t.Fatalf("expected infra/ISF-Infastructure, got %q/%q (body=%s)", out.Area, out.Repo, body)
+	}
+}
+
+func TestMaintenanceCreateRejectsShortTitle(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+	resp, _ := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token),
+		map[string]string{"title": "no"},
+	)
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400 for too-short title, got %d", resp.StatusCode)
+	}
+}
+
+func TestMaintenanceListReturnsCreated(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	// File two requests, then list.
+	for _, title := range []string{
+		"Footer link is broken on the website",
+		"Redis cache connection timeout in the API",
+	} {
+		resp, body := do(t, "POST", srv.URL+"/admin/maintenance",
+			adminHeaders(token), map[string]string{"title": title})
+		if resp.StatusCode != 201 {
+			t.Fatalf("seed create failed: %d body=%s", resp.StatusCode, body)
+		}
+	}
+
+	resp, body := do(t, "GET", srv.URL+"/admin/maintenance", adminHeaders(token), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Items []struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if len(out.Items) != 2 {
+		t.Fatalf("expected 2 maintenance issues, got %d (body=%s)", len(out.Items), body)
 	}
 }
