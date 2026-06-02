@@ -423,10 +423,6 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 		// rare whitespace edge case (titles don't usually have mixed
 		// scripts back-to-back).
 		title = stripNoTranslateWrappers(translated[0])
-		// restoreImages swaps the typed img/comment placeholders back to real
-		// tags, leaving only plain notranslate spans (protected proper nouns +
-		// numbers). Then repair spaces the translator dropped around those
-		// spans (e.g. "Janakpurमें" → "Janakpur में", "ISFको" → "ISF को").
 		body = fixNoTranslateSpacing(restoreImages(translated[1]))
 
 		// ----- Sanity gates: never cache an obviously broken translation.
