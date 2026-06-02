@@ -602,12 +602,14 @@ func TestDonationsListReturnsLivePaidOnly(t *testing.T) {
 	token := loginAdmin(t, srv)
 
 	// A real paid live donation (should show), a test-mode paid one (filtered
-	// by livemode=true default), and a pending live one (filtered by paid).
+	// out by livemode=true default), and a pending live one (filtered out by
+	// status=paid). The admin donations dashboard requests status=paid +
+	// livemode default, so we exercise both filters together here.
 	insertDonation(t, "cs_live_paid1", "Asha Sharma", "asha@example.com", 5000, "paid")
 	insertDonation(t, "cs_test_paid2", "Test Donor", "test@example.com", 9900, "paid")
 	insertDonation(t, "cs_live_pending3", "Maybe Donor", "maybe@example.com", 2500, "pending")
 
-	resp, body := do(t, "GET", srv.URL+"/donations", adminHeaders(token), nil)
+	resp, body := do(t, "GET", srv.URL+"/donations?status=paid", adminHeaders(token), nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
 	}
