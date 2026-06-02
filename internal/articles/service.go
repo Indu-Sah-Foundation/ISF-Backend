@@ -302,6 +302,17 @@ func stripNoTranslateWrappers(s string) string {
 	})
 }
 
+var (
+	glueBeforeSpanRe = regexp.MustCompile(`([\p{L}\p{N}\p{M}])(<span class="notranslate")`)
+	glueAfterSpanRe  = regexp.MustCompile(`(</span>)([\p{L}\p{N}\p{M}])`)
+)
+
+func fixNoTranslateSpacing(s string) string {
+	s = glueBeforeSpanRe.ReplaceAllString(s, "$1 $2")
+	s = glueAfterSpanRe.ReplaceAllString(s, "$1 $2")
+	return s
+}
+
 type Repository interface {
 	Create(ctx context.Context, req CreateArticleRequest) (*Article, error)
 	GetBySlug(ctx context.Context, slug string) (*Article, error)
@@ -412,7 +423,11 @@ func (s *Service) Get(ctx context.Context, slug, lang string) (*Article, error) 
 		// rare whitespace edge case (titles don't usually have mixed
 		// scripts back-to-back).
 		title = stripNoTranslateWrappers(translated[0])
-		body = restoreImages(translated[1])
+		// restoreImages swaps the typed img/comment placeholders back to real
+		// tags, leaving only plain notranslate spans (protected proper nouns +
+		// numbers). Then repair spaces the translator dropped around those
+		// spans (e.g. "Janakpurमें" → "Janakpur में", "ISFको" → "ISF को").
+		body = fixNoTranslateSpacing(restoreImages(translated[1]))
 
 		// ----- Sanity gates: never cache an obviously broken translation.
 		// Each failure path serves the translation for THIS request (so
