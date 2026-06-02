@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stripe/stripe-go/v78"
 
 	"isf-backend/internal/articles"
 	"isf-backend/internal/auth"
@@ -27,6 +28,7 @@ import (
 	"isf-backend/internal/db"
 	"isf-backend/internal/health"
 	"isf-backend/internal/maintenance"
+	"isf-backend/internal/payments"
 	"isf-backend/internal/people"
 )
 
@@ -60,6 +62,7 @@ func newServer(t *testing.T) *httptest.Server {
 	// Reset state between test binaries.
 	for _, tbl := range []string{
 		"article_translations", "articles", "contacts", "users", "people",
+		"donations", "stripe_events",
 	} {
 		_, _ = pool.Exec(ctx, "TRUNCATE TABLE "+tbl+" CASCADE")
 	}
@@ -107,6 +110,21 @@ func newServer(t *testing.T) *httptest.Server {
 		}),
 	).RegisterRoutes(r, adminMW...)
 
+	// Payments → Stripe, wired with a fake Stripe client (no network). The
+	// admin middleware is composed into one handler the way main.go does it.
+	adminChain := func(c *gin.Context) {
+		for _, mw := range adminMW {
+			mw(c)
+			if c.IsAborted() {
+				return
+			}
+		}
+		c.Next()
+	}
+	payments.NewHandler(
+		payments.NewService(payments.NewRepo(pool), &fakeStripe{}),
+	).RegisterRoutes(r, nil, adminChain)
+
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -141,6 +159,25 @@ func (f *fakeGitHub) CreateIssue(_ context.Context, repo, title, _ string, label
 	return &iss, nil
 }
 
+
+func (f *fakeGitHub) seedClosed(repo, title string, closedAt time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextNum++
+	ca := closedAt
+	f.created = append(f.created, fakeIssue{
+		repo:   repo,
+		labels: []string{maintenance.Label},
+		issue: maintenance.Issue{
+			Number:   f.nextNum,
+			HTMLURL:  "https://github.com/Indu-Sah-Foundation/" + repo + "/issues/" + strconv.Itoa(f.nextNum),
+			Title:    title,
+			State:    "closed",
+			ClosedAt: &ca,
+		},
+	})
+}
+
 func (f *fakeGitHub) ListIssues(_ context.Context, repos []string, label string, _ int) ([]maintenance.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -164,6 +201,22 @@ func sliceContains(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// fakeStripe satisfies payments.Stripe without any network calls.
+type fakeStripe struct{}
+
+func (fakeStripe) CreateCheckoutSession(_ context.Context, _ int, _ *string) (string, string, error) {
+	return "cs_test_fake123", "https://checkout.stripe.com/c/pay/cs_test_fake123", nil
+}
+
+func (fakeStripe) VerifyWebhook(_ []byte, _ string) (stripe.Event, error) {
+	// Not exercised by the list tests; return an empty event.
+	return stripe.Event{}, nil
+}
+
+func (fakeStripe) GetSession(_ context.Context, _ string) (string, string, bool, error) {
+	return "unpaid", "", false, nil
 }
 
 type fakeTranslator struct{}
@@ -470,5 +523,149 @@ func TestMaintenanceListReturnsCreated(t *testing.T) {
 	_ = json.Unmarshal(body, &out)
 	if len(out.Items) != 2 {
 		t.Fatalf("expected 2 maintenance issues, got %d (body=%s)", len(out.Items), body)
+	}
+}
+
+func TestMaintenanceListHidesOldCompleted(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	if _, body := do(t, "POST", srv.URL+"/admin/maintenance",
+		adminHeaders(token), map[string]string{"title": "Open request still in progress"}); body == nil {
+		t.Fatal("seed open failed")
+	}
+	testGitHub.seedClosed("ISF-Frontend", "Completed two days ago", time.Now().Add(-48*time.Hour))
+	testGitHub.seedClosed("ISF-Backend", "Completed an hour ago", time.Now().Add(-1*time.Hour))
+
+	resp, body := do(t, "GET", srv.URL+"/admin/maintenance", adminHeaders(token), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Items []struct {
+			Title string `json:"title"`
+			State string `json:"state"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(body, &out)
+
+	titles := map[string]bool{}
+	for _, it := range out.Items {
+		titles[it.Title] = true
+	}
+	if !titles["Open request still in progress"] {
+		t.Fatalf("open request should be listed; got %s", body)
+	}
+	if !titles["Completed an hour ago"] {
+		t.Fatalf("recently-completed request should still show; got %s", body)
+	}
+	if titles["Completed two days ago"] {
+		t.Fatalf("request completed >24h ago should be hidden; got %s", body)
+	}
+}
+
+// ============================================================================
+// Donations admin list — the dashboard data source.
+// ============================================================================
+
+// insertDonation writes a donation row straight to the DB, simulating what the
+// Stripe webhook does on a completed payment.
+func insertDonation(t *testing.T, sessionID, name, email string, amountCents int, status string) {
+	t.Helper()
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := db.NewPool(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO donations (amount_cents, currency, email, name, status, stripe_session_id)
+		VALUES ($1,'usd',$2,$3,$4,$5)`,
+		amountCents, email, name, status, sessionID)
+	if err != nil {
+		t.Fatalf("insert donation: %v", err)
+	}
+}
+
+func TestDonationsListRequiresAdmin(t *testing.T) {
+	srv := newServer(t)
+	resp, _ := do(t, "GET", srv.URL+"/donations", map[string]string{"X-API-Key": apiKey}, nil)
+	if resp.StatusCode != 401 {
+		t.Fatalf("donations list without admin JWT should 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestDonationsListReturnsLivePaidOnly(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	// A real paid live donation (should show), a test-mode paid one (filtered
+	// by livemode=true default), and a pending live one (filtered by paid).
+	insertDonation(t, "cs_live_paid1", "Asha Sharma", "asha@example.com", 5000, "paid")
+	insertDonation(t, "cs_test_paid2", "Test Donor", "test@example.com", 9900, "paid")
+	insertDonation(t, "cs_live_pending3", "Maybe Donor", "maybe@example.com", 2500, "pending")
+
+	resp, body := do(t, "GET", srv.URL+"/donations", adminHeaders(token), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Items []struct {
+			Name        string `json:"name"`
+			AmountCents int    `json:"amount_cents"`
+			Status      string `json:"status"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(body, &out)
+
+	if len(out.Items) != 1 {
+		t.Fatalf("expected exactly 1 live+paid donation, got %d (body=%s)", len(out.Items), body)
+	}
+	d := out.Items[0]
+	if d.Name != "Asha Sharma" || d.AmountCents != 5000 || d.Status != "paid" {
+		t.Fatalf("unexpected donation row: %+v", d)
+	}
+}
+
+func TestDonationsListIncludesTestRowsWithLivemodeAll(t *testing.T) {
+	srv := newServer(t)
+	token := loginAdmin(t, srv)
+
+	insertDonation(t, "cs_live_p1", "Live Donor", "live@example.com", 5000, "paid")
+	insertDonation(t, "cs_test_p2", "Test Donor", "test@example.com", 1000, "paid")
+
+	resp, body := do(t, "GET", srv.URL+"/donations?livemode=all", adminHeaders(token), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Items []struct {
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if len(out.Items) != 2 {
+		t.Fatalf("expected 2 donations with livemode=all, got %d (body=%s)", len(out.Items), body)
+	}
+}
+
+func TestCheckoutReturnsSessionURL(t *testing.T) {
+	srv := newServer(t)
+	resp, body := do(t, "POST", srv.URL+"/donations/checkout",
+		map[string]string{"X-API-Key": apiKey},
+		map[string]any{"amount_cents": 5000, "email": "donor@example.com"},
+	)
+	if resp.StatusCode != 200 {
+		t.Fatalf("checkout failed: %d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		URL       string `json:"url"`
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if out.URL == "" || out.SessionID == "" {
+		t.Fatalf("checkout missing url/session_id: %s", body)
 	}
 }

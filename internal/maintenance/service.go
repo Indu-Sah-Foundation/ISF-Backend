@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
-const Label = "maintenance"
+const (
+	Label = "maintenance"
+	completedRetention = 24 * time.Hour
+)
 
 type Repos struct {
 	Frontend string
@@ -75,5 +79,17 @@ func (s *Service) List(ctx context.Context, perRepo int) ([]Issue, error) {
 	if perRepo <= 0 || perRepo > 50 {
 		perRepo = 20
 	}
-	return s.gh.ListIssues(ctx, s.repos.all(), Label, perRepo)
+	issues, err := s.gh.ListIssues(ctx, s.repos.all(), Label, perRepo)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-completedRetention)
+	out := make([]Issue, 0, len(issues))
+	for _, it := range issues {
+		if it.State == "closed" && it.ClosedAt != nil && it.ClosedAt.Before(cutoff) {
+			continue // completed more than a day ago → drop it
+		}
+		out = append(out, it)
+	}
+	return out, nil
 }

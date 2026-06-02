@@ -26,10 +26,11 @@ func NewGitHubClient(token, org string) *GitHubClient {
 }
 
 type Issue struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	Title   string `json:"title"`
-	State   string `json:"state"`
+	Number   int        `json:"number"`
+	HTMLURL  string     `json:"html_url"`
+	Title    string     `json:"title"`
+	State    string     `json:"state"`
+	ClosedAt *time.Time `json:"closed_at,omitempty"`
 }
 
 type createIssueBody struct {
